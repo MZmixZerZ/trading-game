@@ -1,0 +1,188 @@
+/* Performance-optimized CSS for Challenge Page */
+
+/* Hardware acceleration for smooth animations */
+.transform,
+.transition-all,
+.transition-transform,
+.transition-opacity {
+  will-change: transform;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+/* Optimized hover effects */
+.hover-scale {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.hover-scale:hover {
+  transform: scale(1.02) translateZ(0);
+}
+
+/* Smooth animations with better performance */
+@keyframes optimized-pulse {
+  0%, 100% { 
+    opacity: 0.7;
+    transform: scale(1) translateZ(0);
+  }
+  50% { 
+    opacity: 1;
+    transform: scale(1.02) translateZ(0);
+  }
+}
+
+@keyframes optimized-float {
+  0%, 100% { 
+    transform: translateY(0px) translateZ(0);
+    opacity: 0.7;
+  }
+  50% { 
+    transform: translateY(-10px) translateZ(0);
+    opacity: 1;
+  }
+}
+
+@keyframes optimized-glow {
+  0%, 100% { 
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+  }
+  50% { 
+    box-shadow: 0 0 30px rgba(59, 130, 246, 0.5);
+  }
+}
+
+/* Performance classes */
+.animate-optimized-pulse {
+  animation: optimized-pulse 2s ease-in-out infinite;
+}
+
+.animate-optimized-float {
+  animation: optimized-float 3s ease-in-out infinite;
+}
+
+.animate-optimized-glow {
+  animation: optimized-glow 2s ease-in-out infinite;
+}
+
+/* Reduced motion for better performance */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse,
+  .animate-spin,
+  .animate-bounce,
+  .animate-optimized-pulse,
+  .animate-optimized-float,
+  .animate-optimized-glow {
+    animation: none;
+  }
+  
+  .transition-all,
+  .transition-transform,
+  .transition-opacity {
+    transition: none;
+  }
+}
+
+/* Mobile optimizations */
+@media (max-width: 768px) {
+  .blur-3xl {
+    filter: blur(16px);
+  }
+  
+  .blur-xl {
+    filter: blur(8px);
+  }
+  
+  .backdrop-blur-xl {
+    backdrop-filter: blur(8px);
+  }
+  
+  /* Reduce shadow complexity on mobile */
+  .shadow-2xl {
+    box-shadow: 0 10px 25px -3px rgba(0, 0, 0, 0.1);
+  }
+  
+  .shadow-3xl {
+    box-shadow: 0 15px 35px -5px rgba(0, 0, 0, 0.15);
+  }
+}
+
+/* GPU acceleration for better performance */
+.gpu-accelerated {
+  transform: translateZ(0);
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Optimized gradients */
+.gradient-optimized {
+  background-attachment: fixed;
+  background-size: 400% 400%;
+}
+
+/* Smooth scrolling optimization */
+.smooth-scroll {
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Container query optimizations */
+.container-optimized {
+  contain: layout style paint;
+}
+
+/* Text rendering optimization */
+.text-optimized {
+  text-rendering: optimizeSpeed;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Animation performance classes */
+.animation-fill-both {
+  animation-fill-mode: both;
+}
+
+.animation-paused {
+  animation-play-state: paused;
+}
+
+/* Loading state optimizations */
+.loading-skeleton {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: loading-shimmer 1.5s infinite;
+}
+
+@keyframes loading-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* Intersection observer classes for lazy loading */
+.fade-in {
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.fade-in.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Performance monitoring classes */
+.perf-critical {
+  contain: strict;
+  will-change: auto;
+}
+
+.perf-optimized {
+  contain: layout paint;
+}

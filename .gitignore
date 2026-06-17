@@ -1,0 +1,108 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+client/node_modules
+server/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# production
+/build
+client/build
+client/dist
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =====================================
+# SECURITY: Environment & Sensitive Files
+# =====================================
+
+# Environment files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+server/.env*
+client/.env*
+
+# Firebase service account keys (CRITICAL!)
+*firebase*adminsdk*.json
+*.pem
+*.key
+service-account*.json
+
+# Development/backup files that may contain sensitive data
+Datareport.js.txt
+*.backup.js
+*.old.js
+*_backup.*
+*_old.*
+
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# =====================================
+# DEVELOPMENT FILES
+# =====================================
+
+# Editor and IDE files
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# =====================================
+# BUILD & DEPLOYMENT
+# =====================================
+
+# Build outputs
+/dist
+/tmp
+/.cache
+
+# Docker files (if used)
+Dockerfile.prod
+docker-compose.prod.yml
+
+# Backup files
+*.backup
+*.bak
+*.old
+
+# =====================================
+# LOGS
+# =====================================
+
+# Application logs
+logs/
+*.log
+*.log.*
+*.out
+*.err
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock

@@ -1,0 +1,175 @@
+/**
+ * ChartTooltipStyles.css - TradingView style tooltip CSS
+ * ใช้สำหรับปรับปรุง tooltip ให้ดูเหมือน TradingView มากขึ้น
+ */
+
+/* TradingView Tooltip Base Styles */
+.tradingview-tooltip {
+  position: absolute;
+  display: none;
+  padding: 12px 16px;
+  box-sizing: border-box;
+  font-size: 12px;
+  text-align: left;
+  z-index: 1000;
+  top: 12px;
+  left: 12px;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  backdrop-filter: blur(12px);
+  box-shadow: 
+    0 4px 20px rgba(0, 0, 0, 0.25),
+    0 1px 3px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s ease;
+  min-width: 200px;
+}
+
+/* Dark Theme */
+.tradingview-tooltip.dark {
+  background: linear-gradient(145deg, rgba(19, 23, 34, 0.95), rgba(16, 20, 28, 0.95));
+  color: rgba(255, 255, 255, 0.9);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+/* Light Theme */
+.tradingview-tooltip.light {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(248, 250, 252, 0.95));
+  color: rgba(19, 23, 34, 0.9);
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+/* Header */
+.tooltip-header {
+  font-weight: 600;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tooltip-header .symbol {
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.tooltip-header .time {
+  color: #9ca3af;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+/* OHLC Grid */
+.ohlc-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+  margin: 8px 0;
+  font-size: 11px;
+}
+
+.ohlc-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.ohlc-label {
+  color: #9ca3af;
+  font-weight: 500;
+  margin-right: 8px;
+}
+
+.ohlc-value {
+  font-weight: 600;
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+}
+
+/* Price Change */
+.price-change {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.change-value {
+  font-weight: 700;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.change-value.positive {
+  color: #26a69a;
+}
+
+.change-value.negative {
+  color: #ef5350;
+}
+
+.change-percent {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+/* Volume */
+.volume-info {
+  margin-top: 6px;
+  color: #9ca3af;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.volume-value {
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-weight: 500;
+}
+
+/* Icons */
+.tooltip-icon {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+/* Animation */
+.tradingview-tooltip.show {
+  display: block;
+  animation: tooltipFadeIn 0.2s ease-out;
+}
+
+@keyframes tooltipFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .tradingview-tooltip {
+    min-width: 180px;
+    font-size: 11px;
+    padding: 10px 12px;
+  }
+  
+  .ohlc-grid {
+    gap: 8px 12px;
+  }
+  
+  .tooltip-header {
+    font-size: 12px;
+  }
+}

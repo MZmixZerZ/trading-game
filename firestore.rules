@@ -1,0 +1,92 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===== DEVELOPMENT RULES =====
+    // 🔓 Relaxed rules for easier development and testing
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // ===== USER COLLECTIONS =====
+    // Allow authenticated users to read/write their own game history
+    match /gameHistory/{document} {
+      allow read, write, create, delete: if isAuthenticated();
+      allow list: if isAuthenticated();
+    }
+
+    // User subcollection structure
+    match /users/{userId}/gameHistory/{historyId} {
+      allow read, write, create, delete: if isAuthenticated();
+    }
+    
+    // User profiles - relaxed for development
+    match /userProfiles/{userId} {
+      allow read, write, create, delete: if isAuthenticated();
+    }
+    
+    // User data - relaxed for development
+    match /users/{userId} {
+      allow read, write, create, update, delete: if isAuthenticated();
+    }
+    
+    // Quiz history - relaxed for development
+    match /quizHistory/{userId} {
+      allow read, write, create, delete: if isAuthenticated();
+    }
+    
+    // ===== MULTIPLAYER ROOM RULES =====
+    // Game rooms collection - main room data
+    match /rooms/{roomId} {
+      // Allow all operations for authenticated users in development
+      allow read, write, create, update, delete: if isAuthenticated();
+    }
+    
+    // Players subcollection within rooms
+    match /rooms/{roomId}/players/{playerId} {
+      // Allow all operations for authenticated users in development
+      allow read, write, create, update, delete: if isAuthenticated();
+    }
+    
+    // Trades subcollection within room players
+    match /rooms/{roomId}/players/{playerId}/trades/{tradeId} {
+      // Allow all operations for authenticated users in development
+      allow read, write, create, update, delete: if isAuthenticated();
+    }
+    
+    // Real-time game messages
+    match /rooms/{roomId}/messages/{messageId} {
+      // Allow all operations for authenticated users in development
+      allow read, write, create, delete: if isAuthenticated();
+    }
+    
+    // Room events for real-time updates
+    match /rooms/{roomId}/events/{eventId} {
+      // Allow all operations for authenticated users in development
+      allow read, write, create, delete: if isAuthenticated();
+    }
+    
+    // Legacy game rooms (for backward compatibility)
+    match /gameRooms/{roomId} {
+      allow read, write, create, delete: if isAuthenticated();
+      allow list: if isAuthenticated();
+    }
+    
+    // Global leaderboards
+    match /leaderboards/{document} {
+      allow read, write, create, delete: if isAuthenticated();
+    }
+    
+    // Room leaderboards
+    match /roomLeaderboards/{roomId} {
+      allow read, write, create, delete: if isAuthenticated();
+    }
+    
+    // ===== CATCH-ALL FOR DEVELOPMENT =====
+    // Allow authenticated users to access any other collections
+    match /{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+  }
+}

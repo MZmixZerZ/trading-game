@@ -1,0 +1,38 @@
+{
+  "name": "streaming-ideatrade-monorepo",
+  "version": "1.0.0",
+  "description": "Full-stack trading simulation platform",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run server:dev\" \"npm run client:start\"",
+    "start": "npm run client:start",
+    "start:full": "concurrently \"npm run server:start\" \"npm run client:start\"",
+    "build": "npm run client:build",
+    "client:start": "cd client && npm start",
+    "client:build": "cd client && npm run build",
+    "client:test": "cd client && npm test",
+    "client:install": "cd client && npm install",
+    "server:start": "cd server && npm start",
+    "server:dev": "cd server && npm run dev",
+    "server:install": "cd server && npm install",
+    "install:all": "npm run client:install && npm run server:install",
+    "test": "npm run client:test",
+    "clean": "rimraf client/build client/node_modules server/node_modules node_modules",
+    "deploy:build": "npm run client:build"
+  },
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "rimraf": "^5.0.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ideatrade/streaming-ideatrade.git"
+  },
+  "keywords": ["trading", "simulation", "react", "express", "socket.io", "finance"],
+  "author": "IdeaTrade Team",
+  "license": "ISC"
+}
