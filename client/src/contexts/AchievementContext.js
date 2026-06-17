@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { auth } from '../firebase/firebase';
-import { onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from './AuthContext';
 import { checkAchievementsAfterGame, loadUserAchievements } from '../utils/achievementSystem';
 
 const AchievementContext = createContext();
@@ -17,15 +16,14 @@ export const AchievementProvider = ({ children }) => {
   const [userAchievements, setUserAchievements] = useState([]);
   const [newAchievements, setNewAchievements] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [user, setUser] = useState(null);
+  const { currentUser: user } = useAuth();
 
   // Load user achievements when user changes
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      setUser(currentUser);
-      if (currentUser) {
+    const load = async () => {
+      if (user) {
         try {
-          const achievements = await loadUserAchievements(currentUser.uid);
+          const achievements = await loadUserAchievements(user.uid);
           setUserAchievements(achievements);
         } catch (error) {
           console.error('Error loading achievements:', error);
@@ -34,10 +32,9 @@ export const AchievementProvider = ({ children }) => {
         setUserAchievements([]);
       }
       setIsLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, []);
+    };
+    load();
+  }, [user]);
 
   // Check for new achievements after game completion
   const checkNewAchievements = async () => {
@@ -97,7 +94,6 @@ export const AchievementProvider = ({ children }) => {
     userAchievements,
     newAchievements,
     isLoading,
-    user,
     checkNewAchievements,
     clearNewAchievements,
     getAchievementById,

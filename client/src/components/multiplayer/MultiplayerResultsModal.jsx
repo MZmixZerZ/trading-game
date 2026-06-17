@@ -2,9 +2,10 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Trophy, Medal, Award, Crown, Star, Home, Users } from 'lucide-react';
 import { FaTrophy } from 'react-icons/fa';
 import { useMultiplayer } from '../../contexts/MultiplayerContext';
-import { firestore, auth } from '../../firebase/firebase';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { useAuth } from '../../contexts/AuthContext';
 import { checkAchievementsAfterGame } from '../../utils/achievementSystem';
+
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '';
 
 const MultiplayerResultsModal = ({ 
   isOpen, 
@@ -16,72 +17,52 @@ const MultiplayerResultsModal = ({
 }) => {
   const [animationPhase, setAnimationPhase] = useState(0);
   const [hasDataSaved, setHasDataSaved] = useState(false);
-  
+
   // Use data from MultiplayerContext like RoomLeaderboard
   const { players: contextPlayers, currentRoom } = useMultiplayer();
-  
+  const { currentUser } = useAuth();
+
   // Use context data first, fallback to props
   const activePlayers = contextPlayers && contextPlayers.length > 0 ? contextPlayers : players;
 
-  // Function to save Multiplayer game data to Firebase
+  // Function to save Multiplayer game data via API
   const saveMultiplayerGameToFirebase = useCallback(async (playerData, finalPosition, totalPlayers, winnerName) => {
     try {
-      if (!auth.currentUser) {
+      if (!currentUser) {
         console.log('❌ No user logged in, cannot save data');
         return;
       }
 
-      // Debug logging to check currentRoom
-      console.log('🔍 Debug currentRoom data:', {
-        currentRoom: currentRoom,
-        duration: currentRoom?.duration,
-        gameDuration: currentRoom?.gameDuration,
-        timeLimit: currentRoom?.timeLimit,
-        finalDuration: currentRoom?.gameDuration || currentRoom?.duration || currentRoom?.timeLimit || 300,
-        market: currentRoom?.market || currentRoom?.selectedMarket,
-        symbol: currentRoom?.symbol || currentRoom?.stockSymbol || currentRoom?.selectedSymbol,
-        difficulty: currentRoom?.difficulty || currentRoom?.level,
-        allKeys: currentRoom ? Object.keys(currentRoom) : []
-      });
-
-      const gameData = {
-        userId: auth.currentUser.uid,
+      const payload = {
+        userId: currentUser.uid,
+        playerName: currentUser.displayName || 'Player',
         gameType: 'multiplayer',
         roomCode: roomCode || 'unknown',
-        date: new Date().toISOString(),
-        createdAt: serverTimestamp(),
-        
-        // Game results data
-        finalPosition: finalPosition,
-        totalPlayers: totalPlayers,
-        profit: playerData.profit || 0,
-        profitPercentage: playerData.profitPercentage || 0,
-        totalValue: playerData.totalValue || 1000000,
-        finalBalance: playerData.totalValue || 1000000,
-        
-        // Additional data
         result: finalPosition === 1 ? 'win' : finalPosition <= 3 ? 'top3' : 'lose',
         score: Math.max(0, Math.round(playerData.profit || 0)),
-        duration: playerData.actualGameDuration || currentRoom?.gameDuration || currentRoom?.duration || currentRoom?.timeLimit || 300, // Use actual time first
-        
-        // Game History data
-        market: currentRoom?.market || currentRoom?.selectedMarket || 'SET', // Use market from room settings
-        symbol: currentRoom?.symbol || currentRoom?.stockSymbol || currentRoom?.selectedSymbol || 'Unknown', // Add symbol used in game
-        difficulty: currentRoom?.difficulty || currentRoom?.level || 'medium', // Use difficulty from room settings
+        profit: playerData.profit || 0,
+        profitPercentage: playerData.profitPercentage || 0,
+        finalBalance: playerData.totalValue || 1000000,
+        difficulty: currentRoom?.difficulty || currentRoom?.level || 'medium',
+        market: currentRoom?.market || currentRoom?.selectedMarket || 'SET',
+        symbol: currentRoom?.symbol || currentRoom?.stockSymbol || currentRoom?.selectedSymbol || 'Unknown',
+        duration: playerData.actualGameDuration || currentRoom?.gameDuration || currentRoom?.duration || currentRoom?.timeLimit || 300,
         gameMode: 'multiplayer',
-        
-        // Winner data
-        winnerName: winnerName || 'Unknown'
+        data: { finalPosition, totalPlayers, winnerName: winnerName || 'Unknown' }
       };
 
-      const docRef = await addDoc(collection(firestore, 'gameHistory'), gameData);
-      console.log('✅ Successfully saved Multiplayer game data:', docRef.id);
-      
-      return docRef.id;
+      const res = await fetch(`${API_BASE_URL}/api/game-history`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const result = await res.json();
+      console.log('✅ Successfully saved Multiplayer game data:', result.id);
+      return result.id;
     } catch (error) {
       console.error('❌ Error saving Multiplayer game data:', error);
     }
-  }, [roomCode, currentRoom]);
+  }, [roomCode, currentRoom, currentUser]);
 
   // Animation phases should depend only on isOpen to avoid constant resets
   useEffect(() => {
@@ -111,21 +92,20 @@ const MultiplayerResultsModal = ({
     if (!isOpen || hasDataSaved) return;
 
     const saveTimer = setTimeout(async () => {
-      if (activePlayers && activePlayers.length > 0 && auth.currentUser) {
-        // Find current player's position
+      if (activePlayers && activePlayers.length > 0 && currentUser) {
         const sortedPlayers = [...activePlayers].sort((a, b) => {
           const totalValueA = a.totalValue || 1000000;
           const totalValueB = b.totalValue || 1000000;
           return totalValueB - totalValueA;
         });
 
-        const currentPlayer = sortedPlayers.find(player => 
-          player.uid === auth.currentUser.uid || player.id === auth.currentUser.uid
+        const currentPlayer = sortedPlayers.find(player =>
+          player.uid === currentUser.uid || player.id === currentUser.uid
         );
 
         if (currentPlayer) {
-          const finalPosition = sortedPlayers.findIndex(player => 
-            player.uid === auth.currentUser.uid || player.id === auth.currentUser.uid
+          const finalPosition = sortedPlayers.findIndex(player =>
+            player.uid === currentUser.uid || player.id === currentUser.uid
           ) + 1;
 
           const playerData = {
@@ -142,9 +122,9 @@ const MultiplayerResultsModal = ({
           await saveMultiplayerGameToFirebase(playerData, finalPosition, sortedPlayers.length, winnerName);
 
           // Check new achievements after game ends
-          if (auth.currentUser) {
+          if (currentUser) {
             try {
-              const newAchievements = await checkAchievementsAfterGame(auth.currentUser.uid);
+              const newAchievements = await checkAchievementsAfterGame(currentUser.uid);
               if (newAchievements.length > 0) {
                 console.log('🏆 New achievements unlocked in multiplayer:', newAchievements.map(a => a.name).join(', '));
               }
@@ -160,7 +140,7 @@ const MultiplayerResultsModal = ({
     }, 2000);
 
     return () => clearTimeout(saveTimer);
-  }, [isOpen, hasDataSaved, activePlayers, saveMultiplayerGameToFirebase, currentRoom, actualGameDuration]);
+  }, [isOpen, hasDataSaved, activePlayers, currentUser, saveMultiplayerGameToFirebase, currentRoom, actualGameDuration]);
 
   // Reset hasDataSaved when modal is closed
   useEffect(() => {

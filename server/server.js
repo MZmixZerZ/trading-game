@@ -5,7 +5,8 @@ const yahooFinance = require("yahoo-finance2").default;
 const cors = require("cors");
 require("dotenv").config();
 const { GoogleGenerativeAI } = require("@google/generative-ai");
-const admin = require('firebase-admin');
+// Supabase client (server-side)
+const supabase = require('./supabaseClient');
 
 const app = express();
 const server = http.createServer(app);
@@ -156,6 +157,9 @@ app.get('/health', (req, res) => {
         rooms: roomCount,
         players: playerCount
       },
+      database: {
+        supabase: !!supabase,
+      },
       routes: {
         count: routes.length,
         paths: routes
@@ -219,44 +223,7 @@ const geminiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 // AI Grading Configuration
 const AI_CORRECT_THRESHOLD = Number(process.env.QUIZ_AI_CORRECT_THRESHOLD ?? 0.6);
 
-// Firebase Admin setup - แก้ไขให้ใช้ Firebase เป็นหลัก
-let db = null;
-
-try {
-  // ตรวจสอบว่ามีไฟล์ service account key หรือไม่
-  const serviceAccountPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  if (!serviceAccountPath) {
-    throw new Error('GOOGLE_APPLICATION_CREDENTIALS environment variable not set.');
-  }
-
-  // อ่าน service account key จากไฟล์
-  const path = require('path');
-  const fs = require('fs');
-  
-  const fullPath = path.resolve(__dirname, serviceAccountPath);
-  if (!fs.existsSync(fullPath)) {
-    throw new Error(`Service account file not found at: ${fullPath}`);
-  }
-  
-  const serviceAccount = require(fullPath);
-
-  if (!admin.apps.length) {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-      projectId: process.env.FIREBASE_PROJECT_ID || 'streaming-ideatrade',
-    });
-  }
-  
-  db = admin.firestore();
-  console.log('✅ Firebase connected successfully');
-  console.log(`🔥 Firebase status: Connected to project ${process.env.FIREBASE_PROJECT_ID || 'streaming-ideatrade'}`);
-} catch (error) {
-  console.warn('⚠️ Firebase connection failed:', error.message);
-  console.log('📝 Will use fallback storage for data persistence');
-  db = null;
-}
-
-// Fallback: In-memory storage สำหรับกรณีไม่ได้เชื่อม Firebase
+// In-memory fallback storage (when Supabase is unavailable)
 const quizHistory = new Map(); // userId -> quiz data
 const userProfiles = new Map(); // userId -> user profile data
 
@@ -268,42 +235,171 @@ const userProfiles = new Map(); // userId -> user profile data
 const gameRooms = new Map(); // roomId -> room data
 const playerRooms = new Map(); // playerId -> roomId
 
-// Firebase Helper Functions
+// Persistence helper functions — prefer Supabase, fallback to Firestore, then memory
+function toRoomRow(roomId, roomData) {
+  return {
+    id: roomId,
+    code: roomData.code || roomData.roomCode || null,
+    host_id: roomData.hostId || roomData.host || null,
+    settings: roomData.settings || {
+      maxPlayers: roomData.maxPlayers || 10,
+      startingBalance: roomData.startingBalance || 1000000,
+      timeLimit: roomData.timeLimit || 3,
+      symbol: roomData.symbol || 'PTT'
+    },
+    state: roomData.state || {
+      gameState: roomData.gameState || 'waiting',
+      symbol: roomData.symbol || 'PTT',
+      market: roomData.market || 'SET',
+      startDate: roomData.startDate || null
+    },
+    created_at: roomData.createdAt ? new Date(roomData.createdAt).toISOString() : new Date().toISOString()
+  };
+}
+
+function normalizePortfolio(portfolio) {
+  if (!portfolio) return null;
+  if (portfolio instanceof Map) {
+    return Object.fromEntries(portfolio);
+  }
+  if (typeof portfolio === 'object' && !Array.isArray(portfolio)) {
+    return portfolio;
+  }
+  return null;
+}
+
+function toRoomPlayerRow(roomId, playerId, playerData) {
+  return {
+    room_id: roomId,
+    player_id: playerId,
+    player_name: playerData.displayName || playerData.playerName || playerData.name || null,
+    portfolio: normalizePortfolio(playerData.portfolio),
+    joined_at: playerData.joinedAt ? new Date(playerData.joinedAt).toISOString() : new Date().toISOString()
+  };
+}
+
 async function saveRoomToFirebase(roomId, roomData) {
-  if (!db) return;
+  if (!supabase) return;
   try {
-    await db.collection('rooms').doc(roomId).set({
-      ...roomData,
-      lastUpdated: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
-  } catch (error) {
-    console.error('Error saving room to Firebase:', error);
+    const payload = toRoomRow(roomId, roomData);
+    const { error } = await supabase.from('rooms').upsert([payload]);
+    if (error) throw error;
+  } catch (err) {
+    console.warn('⚠️ Supabase saveRoom failed:', err.message || err);
   }
 }
 
 async function savePlayerToFirebase(roomId, playerId, playerData) {
-  if (!db) return;
+  if (!supabase) return;
   try {
-    await db.collection('rooms').doc(roomId)
-      .collection('players').doc(playerId).set({
-        ...playerData,
-        lastUpdated: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
-  } catch (error) {
-    console.error('Error saving player to Firebase:', error);
+    const payload = toRoomPlayerRow(roomId, playerId, playerData);
+    const { error } = await supabase.from('room_players').upsert([payload], { onConflict: 'room_id,player_id' });
+    if (error) throw error;
+  } catch (err) {
+    console.warn('⚠️ Supabase savePlayer failed:', err.message || err);
   }
 }
 
-async function saveGameResultToFirebase(roomId, gameResult) {
-  if (!db) return;
-  try {
-    await db.collection('gameResults').add({
-      roomId,
-      ...gameResult,
-      completedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
-  } catch (error) {
-    console.error('Error saving game result to Firebase:', error);
+async function saveGameResultsToDatabase(room, results) {
+  const now = new Date();
+  const gameResult = {
+    room_id: room.id,
+    symbol: room.chart?.symbol || null,
+    duration: room.duration || null,
+    player_count: results.length,
+    end_time: now.toISOString(),
+    results: results.map(result => ({
+      player_id: result.playerId || result.id,
+      player_name: result.playerName || result.name,
+      final_balance: result.balance,
+      portfolio_value: result.portfolioValue,
+      total_value: result.totalValue,
+      profit: result.profit ?? result.totalReturn ?? 0,
+      profit_percentage: result.profitPercentage,
+      total_trades: result.trades,
+      rank: result.rank ?? result.rank
+    })),
+    metadata: {
+      start_time: room.startTime ? new Date(room.startTime).toISOString() : null,
+      finish_time: now.toISOString(),
+      game_settings: room.settings || room.gameSettings || {},
+      total_players: room.players?.size || results.length,
+      source: 'server'
+    },
+    created_at: now.toISOString()
+  };
+
+  if (supabase) {
+    try {
+      const { error } = await supabase.from('game_results').insert([gameResult]);
+      if (error) throw error;
+
+      for (const result of results) {
+        const playerId = result.playerId || result.id;
+        const playerName = result.playerName || result.name || 'Unknown';
+        const profitValue = Number(result.profit ?? result.totalReturn ?? 0);
+
+        const { data: existingRow, error: selectError } = await supabase
+          .from('player_history')
+          .select('*')
+          .eq('player_id', playerId)
+          .limit(1)
+          .maybeSingle();
+
+        if (selectError) {
+          console.warn('⚠️ Supabase select player_history error:', selectError.message || selectError);
+        }
+
+        const existing = existingRow || {
+          player_id: playerId,
+          player_name: playerName,
+          total_games: 0,
+          total_profit: 0,
+          average_profit: 0,
+          wins: 0,
+          losses: 0,
+          data: { games: [] }
+        };
+
+        const updatedGames = Array.isArray(existing.data?.games) ? [...existing.data.games] : [];
+        updatedGames.push({
+          room_id: room.id,
+          final_balance: result.balance,
+          total_value: result.totalValue,
+          profit: profitValue,
+          profit_percentage: result.profitPercentage,
+          rank: result.rank,
+          timestamp: now.toISOString()
+        });
+
+        const updatedHistoryRow = {
+          player_id: playerId,
+          player_name: playerName,
+          total_games: Number(existing.total_games || 0) + 1,
+          total_profit: Number(existing.total_profit || 0) + profitValue,
+          average_profit: Number(existing.total_games || 0) + 1 > 0
+            ? (Number(existing.total_profit || 0) + profitValue) / (Number(existing.total_games || 0) + 1)
+            : 0,
+          wins: Number(existing.wins || 0) + (profitValue > 0 ? 1 : 0),
+          losses: Number(existing.losses || 0) + (profitValue <= 0 ? 1 : 0),
+          data: {
+            ...existing.data,
+            games: updatedGames
+          },
+          updated_at: now.toISOString()
+        };
+
+        const { error: upsertError } = await supabase.from('player_history').upsert([updatedHistoryRow], { onConflict: 'player_id' });
+        if (upsertError) {
+          console.warn('⚠️ Supabase upsert player_history failed:', upsertError.message || upsertError);
+        }
+      }
+
+      console.log(`✅ Game results saved to Supabase for room ${room.id}`);
+      return;
+    } catch (err) {
+      console.warn('⚠️ Supabase saveGameResults failed:', err.message || err);
+    }
   }
 }
 
@@ -386,7 +482,7 @@ io.on('connection', (socket) => {
         },
         settings: {
           maxPlayers: roomSettings.settings?.maxPlayers || 10,
-          startingBalance: roomSettings.settings?.startingBalance || 100000,
+          startingBalance: roomSettings.settings?.startingBalance || 1000000,
           timeLimit: timeLimit, // ใช้ค่าจาก frontend
           symbol: roomSettings.symbol || 'PTT'
         },
@@ -404,7 +500,7 @@ io.on('connection', (socket) => {
           createdAt: new Date(),
           settings: {
             maxPlayers: roomSettings.settings?.maxPlayers || 10,
-            startingBalance: roomSettings.settings?.startingBalance || 100000,
+            startingBalance: roomSettings.settings?.startingBalance || 1000000,
             timeLimit: timeLimit, // ใช้ค่าจาก frontend
             symbol: roomSettings.symbol || 'PTT'
           },
@@ -445,7 +541,7 @@ io.on('connection', (socket) => {
         id: playerId,
         name: playerName,
         socketId: socket.id,
-        balance: 100000, // Starting balance
+        balance: 1000000, // Starting balance
         portfolio: new Map(), // symbol -> { shares, avgPrice }
         trades: [],
         isReady: false,
@@ -480,20 +576,21 @@ io.on('connection', (socket) => {
         id: p.id,
         name: p.name,
         isReady: p.isReady || false,
-        balance: p.balance || 100000
+        balance: p.balance || 1000000
       })) : [];
 
       // Notify player joined successfully - รวมข้อมูล settings ที่ถูกต้องด้วย
       socket.emit('room-joined', {
         roomId,
         playerId,
+        hostId: room.host,
         isHost: room.host === playerId,
         players: playersList,
         gameState: room.gameState || 'waiting',
         settings: room.settings || {
           maxPlayers: 10,
-          startingBalance: 100000,
-          timeLimit: 3, // fallback ถ้าไม่มี room.settings
+          startingBalance: 1000000,
+          timeLimit: 3,
           symbol: room.chart?.symbol || 'PTT'
         },
         symbol: room.symbol || room.chart?.symbol || 'PTT',
@@ -540,7 +637,7 @@ io.on('connection', (socket) => {
         id: p.id,
         name: p.name,
         isReady: p.isReady || false,
-        balance: p.balance || 100000
+        balance: p.balance || 1000000
       }));
       
       // Notify all players in room
@@ -739,9 +836,26 @@ io.on('connection', (socket) => {
       
       player.trades.push(trade);
 
-      // บันทึกการซื้อขายลง Firebase
-      if (db) {
-        try {
+      // บันทึกการซื้อขาย — พยายามใช้ Supabase ก่อน แล้ว fallback เป็น Firestore
+      try {
+        if (supabase) {
+          const { error } = await supabase.from('trades').insert([{
+            room_id: roomId,
+            user_id: playerId,
+            symbol,
+            action,
+            quantity: shares,
+            price,
+            portfolio: Object.fromEntries(player.portfolio),
+            metadata: {
+              trade,
+              player_name: player.name,
+              new_balance: player.balance
+            },
+            created_at: new Date().toISOString()
+          }]);
+          if (error) throw error;
+        } else if (db) {
           await db.collection('trades').add({
             roomId,
             playerId,
@@ -751,9 +865,9 @@ io.on('connection', (socket) => {
             portfolio: Object.fromEntries(player.portfolio),
             timestamp: admin.firestore.FieldValue.serverTimestamp()
           });
-        } catch (error) {
-          console.error('Error saving trade to Firebase:', error);
         }
+      } catch (error) {
+        console.error('Error saving trade to DB:', error);
       }
 
       // Notify player of successful trade
@@ -825,7 +939,7 @@ io.on('connection', (socket) => {
           .map(p => ({
             id: p.id,
             name: p.name,
-            balance: p.balance || 1000000,
+            balance: p.balance || 10000000,
             position: p.position || 0,
             portfolioValue: p.portfolioValue || 0,
             totalValue: p.totalValue || p.balance || 1000000,
@@ -863,8 +977,8 @@ io.on('connection', (socket) => {
         const currentPrice = room.chart.data[room.chart.currentIndex]?.close || 0;
         const portfolioValue = calculatePortfolioValue(player.portfolio, currentPrice);
         const totalValue = player.balance + portfolioValue;
-        const totalReturn = totalValue - 100000; // เงินเริ่มต้น
-        const returnPercentage = (totalReturn / 100000) * 100;
+        const totalReturn = totalValue - 1000000; // เงินเริ่มต้น
+        const returnPercentage = (totalReturn / 1000000) * 100;
 
         return {
           playerId: player.id,
@@ -878,21 +992,11 @@ io.on('connection', (socket) => {
         };
       }).sort((a, b) => b.totalValue - a.totalValue);
 
-      // บันทึกผลลัพธ์เกมลง Firebase
-      await saveGameResultToFirebase(roomId, {
-        players: finalResults,
-        gameSettings: {
-          symbol: room.chart.symbol,
-          duration: room.duration,
-          seed: room.chart.seed
-        },
-        startTime: new Date(room.startTime),
-        finishTime: new Date(room.finishTime),
-        totalPlayers: room.players.size
-      });
+      // บันทึกผลลัพธ์เกมลงฐานข้อมูล
+      await saveGameResultsToDatabase(room, finalResults);
 
       // Broadcast to all players
-      io.to(roomId).emit('game-finished', { 
+      io.to(roomId).emit('game-finished', {
         finishTime: room.finishTime,
         finalLeaderboard: finalResults
       });
@@ -931,10 +1035,18 @@ io.on('connection', (socket) => {
         if (room) {
           const player = room.players.get(playerId);
           room.players.delete(playerId);
-          
+
+          const remainingPlayers = room.players ? Array.from(room.players.values()).map(p => ({
+            id: p.id,
+            name: p.name,
+            isReady: p.isReady || false,
+            balance: p.balance || 1000000
+          })) : [];
+
           socket.to(roomId).emit('player-left', {
             playerId,
-            playerName: player?.name || 'Unknown'
+            playerName: player?.name || 'Unknown',
+            players: remainingPlayers
           });
 
           // If room is empty, delete it
@@ -993,7 +1105,7 @@ io.on('connection', (socket) => {
             id: p.id,
             name: p.name,
             isReady: p.isReady || false,
-            balance: p.balance || 100000
+            balance: p.balance || 1000000
           })) : []
         });
         
@@ -1033,7 +1145,7 @@ function startRoomChartProgression(roomId) {
   
   console.log(`🕒 Starting chart progression for room ${roomId}: ${gameDurationMinutes} minutes (${gameDurationMs}ms)`);
 
-  const interval = setInterval(() => {
+  const interval = setInterval(async () => {
     const now = Date.now();
     const timeRemaining = gameEndTime - now;
     
@@ -1057,13 +1169,13 @@ function startRoomChartProgression(roomId) {
           portfolioValue,
           totalValue: p.balance + portfolioValue,
           trades: p.trades.length,
-          profit: (p.balance + portfolioValue) - 100000, // Starting balance was 100000
-          profitPercentage: ((p.balance + portfolioValue - 100000) / 100000) * 100
+          profit: (p.balance + portfolioValue) - 1000000,
+          profitPercentage: ((p.balance + portfolioValue - 1000000) / 1000000) * 100
         };
       }).sort((a, b) => b.totalValue - a.totalValue);
 
-      // บันทึกผลลัพธ์ลง Firestore (ไม่ใช่ in-memory)
-      saveGameResultsToFirestore(room, finalResults);
+      // บันทึกผลลัพธ์ลงฐานข้อมูล
+      await saveGameResultsToDatabase(room, finalResults);
 
       io.to(roomId).emit('game-finished', { results: finalResults });
       console.log(`🏁 Game finished in room ${roomId} after ${gameDurationMinutes} minutes`);
@@ -1091,104 +1203,7 @@ function startRoomChartProgression(roomId) {
   }, 1000); // 1 second per update
 }
 
-// บันทึกผลลัพธ์เกมลง Firestore (เฉพาะเมื่อเกมจบ)
-async function saveGameResultsToFirestore(room, results) {
-  if (!db) {
-    console.log('📝 No Firebase connection - skipping game result save');
-    return;
-  }
-
-  try {
-    const gameResult = {
-      roomId: room.id,
-      gameType: 'multiplayer',
-      symbol: room.chart.symbol,
-      duration: room.duration,
-      startTime: room.startTime,
-      endTime: Date.now(),
-      playerCount: room.players.size,
-      results: results.map(r => ({
-        playerId: r.id,
-        playerName: r.name,
-        finalBalance: r.balance,
-        portfolioValue: r.portfolioValue,
-        totalValue: r.totalValue,
-        profit: r.profit,
-        profitPercentage: r.profitPercentage,
-        totalTrades: r.trades,
-        rank: results.indexOf(r) + 1
-      })),
-      chartSeed: room.chart.seed,
-      createdAt: new Date().toISOString()
-    };
-
-    // บันทึกผลลัพธ์เกมรวม
-    await db.collection('gameResults').add(gameResult);
-
-    // บันทึกประวัติของผู้เล่นแต่ละคน
-    const batch = db.batch();
-    
-    for (const result of results) {
-      const playerHistoryRef = db.collection('playerHistory').doc(result.id);
-      const playerHistoryDoc = await playerHistoryRef.get();
-      
-      let playerHistory = playerHistoryDoc.exists ? playerHistoryDoc.data() : {
-        playerId: result.id,
-        playerName: result.name,
-        totalGames: 0,
-        totalProfit: 0,
-        averageProfit: 0,
-        wins: 0,
-        losses: 0,
-        games: []
-      };
-
-      // เพิ่มเกมใหม่
-      const gameRecord = {
-        gameId: gameResult.roomId,
-        date: new Date().toISOString(),
-        symbol: room.chart.symbol,
-        finalBalance: result.balance,
-        portfolioValue: result.portfolioValue,
-        totalValue: result.totalValue,
-        profit: result.profit,
-        profitPercentage: result.profitPercentage,
-        rank: results.indexOf(result) + 1,
-        totalPlayers: results.length
-      };
-
-      playerHistory.games.push(gameRecord);
-      playerHistory.totalGames += 1;
-      playerHistory.totalProfit += result.profit;
-      playerHistory.averageProfit = playerHistory.totalProfit / playerHistory.totalGames;
-      
-      if (result.profit > 0) {
-        playerHistory.wins += 1;
-      } else {
-        playerHistory.losses += 1;
-      }
-
-      // เก็บเฉพาะ 50 เกมล่าสุด
-      if (playerHistory.games.length > 50) {
-        playerHistory.games = playerHistory.games.slice(-50);
-      }
-
-      batch.set(playerHistoryRef, playerHistory);
-    }
-
-    await batch.commit();
-    console.log(`✅ Game results saved to Firestore for room ${room.id}`);
-
-  } catch (error) {
-    console.error('❌ Failed to save game results to Firestore:', error);
-    // ไม่ throw error เพราะไม่ให้กระทบต่อการทำงานของเกม
-  }
-}
-
-// Quiz Bank (server-side source of truth for answers)
-// Keep answers here to avoid exposing them on the client.
 const QUIZ_BANK = [
-  // Easy
   { id: 1, level: 'easy', type: 'short', question: 'หุ้นคืออะไร?', correct: 'สิทธิความเป็นเจ้าของธุรกิจ', alternativeAnswers: [
     'สิทธิความเป็นเจ้าของในธุรกิจ','สิทธิเป็นเจ้าของธุรกิจ','ความเป็นเจ้าของธุรกิจ','สิทธิความเป็นเจ้าของบริษัท','สิทธิความเป็นเจ้าของในบริษัท'
   ]},
@@ -1294,31 +1309,30 @@ app.get('/api/quiz/question/:id', (req, res) => {
 app.get("/api/quiz/history/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    
-    // พยายามใช้ Firebase ก่อนเสมอ
-    if (db) {
-      try {
-        const doc = await db.collection('quizHistory').doc(userId).get();
-        if (doc.exists) {
-          return res.json(doc.data());
-        }
-        // ถ้าไม่มีข้อมูลใน Firebase ให้สร้างเอกสารว่าง
+    // Try Supabase first, then Firestore, then memory
+    try {
+      if (supabase) {
+        const { data, error } = await supabase.from('quiz_history').select('*').eq('user_id', userId).limit(1).maybeSingle();
+        if (error) throw error;
+        if (data) return res.json(data);
+
         const defaultHistory = {
-          userId,
+          user_id: userId,
           quizzes: [],
-          totalQuizzes: 0,
-          averageScore: 0,
-          lastQuizDate: null,
-          levelAssessmentDone: false
+          total_quizzes: 0,
+          average_score: 0,
+          last_quiz_date: null,
+          level_assessment_done: false
         };
-        await db.collection('quizHistory').doc(userId).set(defaultHistory);
+        const { error: insErr } = await supabase.from('quiz_history').insert([defaultHistory]);
+        if (insErr) throw insErr;
         return res.json(defaultHistory);
-      } catch (firebaseError) {
-        console.warn('Firebase read error:', firebaseError.message);
       }
+    } catch (err) {
+      console.warn('⚠️ Supabase quiz history read error:', err.message || err);
     }
-    
-    // Fallback ไปยัง in-memory เฉพาะเมื่อ Firebase ใช้ไม่ได้
+
+    // Fallback to in-memory
     console.log('Using in-memory fallback for user:', userId);
     const history = quizHistory.get(userId) || {
       userId,
@@ -1338,34 +1352,26 @@ app.post("/api/quiz/history/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const { quizData, isLevelAssessment = false } = req.body;
-    
-    // ดึงข้อมูลเดิม - พยายามใช้ Firebase ก่อน
+    // Fetch existing history (Supabase -> Firestore -> memory)
     let userHistory;
-    
-    if (db) {
-      try {
-        const doc = await db.collection('quizHistory').doc(userId).get();
-        userHistory = doc.exists ? doc.data() : {
-          userId,
+    try {
+      if (supabase) {
+        const { data, error } = await supabase.from('quiz_history').select('*').eq('user_id', userId).limit(1).maybeSingle();
+        if (error) throw error;
+        userHistory = data || {
+          user_id: userId,
           quizzes: [],
-          totalQuizzes: 0,
-          averageScore: 0,
-          lastQuizDate: null,
-          levelAssessmentDone: false
-        };
-      } catch (firebaseError) {
-        console.warn('Firebase read error, using memory:', firebaseError.message);
-        userHistory = quizHistory.get(userId) || {
-          userId,
-          quizzes: [],
-          totalQuizzes: 0,
-          averageScore: 0,
-          lastQuizDate: null,
-          levelAssessmentDone: false
+          total_quizzes: 0,
+          average_score: 0,
+          last_quiz_date: null,
+          level_assessment_done: false
         };
       }
-    } else {
-      // ใช้ in-memory เฉพาะเมื่อไม่มี Firebase
+    } catch (err) {
+      console.warn('⚠️ Supabase quiz history read error (post):', err.message || err);
+    }
+
+    if (!userHistory) {
       userHistory = quizHistory.get(userId) || {
         userId,
         quizzes: [],
@@ -1400,20 +1406,27 @@ app.post("/api/quiz/history/:userId", async (req, res) => {
     const totalScore = userHistory.quizzes.reduce((sum, quiz) => sum + quiz.score, 0);
     userHistory.averageScore = totalScore / userHistory.totalQuizzes;
 
-    // บันทึกลง Firebase เป็นอันดับแรก
-    if (db) {
-      try {
-        await db.collection('quizHistory').doc(userId).set(userHistory);
-        console.log('✅ Quiz history saved to Firebase for user:', userId);
-      } catch (firebaseError) {
-        console.warn('❌ Firebase save error:', firebaseError.message);
-        // ถ้า Firebase save ไม่ได้ ให้เก็บใน memory เป็น backup
+    // Save: try Supabase first, fallback to Firestore, then memory
+    try {
+      if (supabase) {
+        const payload = {
+          user_id: userId,
+          quizzes: userHistory.quizzes,
+          total_quizzes: userHistory.totalQuizzes,
+          average_score: userHistory.averageScore,
+          last_quiz_date: userHistory.lastQuizDate,
+          level_assessment_done: userHistory.levelAssessmentDone
+        };
+        const { error } = await supabase.from('quiz_history').upsert([payload], { onConflict: 'user_id' });
+        if (error) throw error;
+        console.log('✅ Quiz history saved to Supabase for user:', userId);
+      } else {
         quizHistory.set(userId, userHistory);
+        console.log('📝 Quiz history saved to memory for user:', userId);
       }
-    } else {
-      // เก็บใน memory เฉพาะเมื่อไม่มี Firebase
+    } catch (error) {
+      console.warn('❌ Error saving quiz history to DB:', error.message || error);
       quizHistory.set(userId, userHistory);
-      console.log('📝 Quiz history saved to memory for user:', userId);
     }
     
     res.json(userHistory);
@@ -1427,14 +1440,13 @@ app.get("/api/profile/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     
-    // พยายามใช้ Firebase ก่อนเสมอ
-    if (db) {
-      try {
-        const doc = await db.collection('userProfiles').doc(userId).get();
-        if (doc.exists) {
-          return res.json(doc.data());
-        }
-        // ถ้าไม่มีข้อมูลใน Firebase ให้สร้างโปรไฟล์ default
+    // Try Supabase first, then in-memory
+    try {
+      if (supabase) {
+        const { data, error } = await supabase.from('user_profiles').select('data').eq('id', userId).limit(1).maybeSingle();
+        if (error) throw error;
+        if (data && data.data) return res.json(data.data);
+
         const defaultProfile = {
           userId,
           level: 'beginner',
@@ -1445,15 +1457,14 @@ app.get("/api/profile/:userId", async (req, res) => {
             topics: ['trading_basics']
           }
         };
-        await db.collection('userProfiles').doc(userId).set(defaultProfile);
+        const { error: insErr } = await supabase.from('user_profiles').insert([{ id: userId, data: defaultProfile }]);
+        if (insErr) throw insErr;
         return res.json(defaultProfile);
-      } catch (firebaseError) {
-        console.warn('Firebase read error:', firebaseError.message);
       }
+    } catch (err) {
+      console.warn('⚠️ Supabase user profile read error:', err.message || err);
     }
-    
-    // Fallback ไปยัง in-memory เฉพาะเมื่อ Firebase ใช้ไม่ได้
-    console.log('Using in-memory fallback for profile:', userId);
+
     const profile = userProfiles.get(userId) || {
       userId,
       level: 'beginner',
@@ -1475,37 +1486,19 @@ app.put("/api/profile/:userId", async (req, res) => {
     const { userId } = req.params;
     const updates = req.body;
     
-    // ดึงข้อมูลเดิม - พยายามใช้ Firebase ก่อน
+    // Fetch existing profile (Supabase -> memory)
     let profile;
-    
-    if (db) {
-      try {
-        const doc = await db.collection('userProfiles').doc(userId).get();
-        profile = doc.exists ? doc.data() : {
-          userId,
-          level: 'beginner',
-          experience: 0,
-          badges: [],
-          preferences: {
-            difficulty: 'easy',
-            topics: ['trading_basics']
-          }
-        };
-      } catch (firebaseError) {
-        console.warn('Firebase read error, using memory:', firebaseError.message);
-        profile = userProfiles.get(userId) || {
-          userId,
-          level: 'beginner',
-          experience: 0,
-          badges: [],
-          preferences: {
-            difficulty: 'easy',
-            topics: ['trading_basics']
-          }
-        };
+    try {
+      if (supabase) {
+        const { data, error } = await supabase.from('user_profiles').select('data').eq('id', userId).limit(1).maybeSingle();
+        if (error) throw error;
+        profile = data?.data || null;
       }
-    } else {
-      // ใช้ in-memory เฉพาะเมื่อไม่มี Firebase
+    } catch (err) {
+      console.warn('⚠️ Supabase profile read error (put):', err.message || err);
+    }
+
+    if (!profile) {
       profile = userProfiles.get(userId) || {
         userId,
         level: 'beginner',
@@ -1521,20 +1514,19 @@ app.put("/api/profile/:userId", async (req, res) => {
     // อัปเดตข้อมูล profile
     profile = { ...profile, ...updates };
     
-    // บันทึกลง Firebase เป็นอันดับแรก
-    if (db) {
-      try {
-        await db.collection('userProfiles').doc(userId).set(profile);
-        console.log('✅ Profile saved to Firebase for user:', userId);
-      } catch (firebaseError) {
-        console.warn('❌ Firebase save error:', firebaseError.message);
-        // ถ้า Firebase save ไม่ได้ ให้เก็บใน memory เป็น backup
+    // Save profile: Supabase -> Firestore -> memory
+    try {
+      if (supabase) {
+        const { error } = await supabase.from('user_profiles').upsert([{ id: userId, data: profile }], { onConflict: 'id' });
+        if (error) throw error;
+        console.log('✅ Profile saved to Supabase for user:', userId);
+      } else {
         userProfiles.set(userId, profile);
+        console.log('📝 Profile saved to memory for user:', userId);
       }
-    } else {
-      // เก็บใน memory เฉพาะเมื่อไม่มี Firebase
+    } catch (error) {
+      console.warn('❌ Error saving profile to DB:', error.message || error);
       userProfiles.set(userId, profile);
-      console.log('📝 Profile saved to memory for user:', userId);
     }
     
     res.json(profile);
@@ -1866,11 +1858,44 @@ app.post("/api/quiz/grade", async (req, res) => {
           timestamp: new Date().toISOString()
         };
 
-        // ดึงข้อมูลเดิมจาก Firebase ก่อน
+        // ดึงข้อมูลเดิมจาก Supabase / Firestore / memory
         let userHistory;
-        
-        // ใช้ in-memory storage ใน development
-        if (!db) {
+        try {
+          if (supabase) {
+            const { data, error } = await supabase.from('quiz_history').select('*').eq('user_id', userId).limit(1).maybeSingle();
+            if (error) throw error;
+            userHistory = data || {
+              user_id: userId,
+              quizzes: [],
+              total_quizzes: 0,
+              average_score: 0,
+              last_quiz_date: null,
+              level_assessment_done: false
+            };
+          }
+        } catch (err) {
+          console.warn('⚠️ Supabase quiz history read error:', err.message || err);
+        }
+
+        if (!userHistory) {
+          if (db) {
+            try {
+              const doc = await db.collection('quizHistory').doc(userId).get();
+              userHistory = doc.exists ? doc.data() : {
+                userId,
+                quizzes: [],
+                totalQuizzes: 0,
+                averageScore: 0,
+                lastQuizDate: null,
+                levelAssessmentDone: false
+              };
+            } catch (firebaseError) {
+              console.warn('Firebase error, using memory:', firebaseError.message);
+            }
+          }
+        }
+
+        if (!userHistory) {
           userHistory = quizHistory.get(userId) || {
             userId,
             quizzes: [],
@@ -1879,52 +1904,43 @@ app.post("/api/quiz/grade", async (req, res) => {
             lastQuizDate: null,
             levelAssessmentDone: false
           };
-        } else {
-          // ลองดึงจาก Firebase ใน production
-          try {
-            const doc = await db.collection('quizHistory').doc(userId).get();
-            userHistory = doc.exists ? doc.data() : {
-              userId,
-              quizzes: [],
-              totalQuizzes: 0,
-              averageScore: 0,
-              lastQuizDate: null,
-              levelAssessmentDone: false
-            };
-          } catch (firebaseError) {
-            console.warn('Firebase error, using memory:', firebaseError.message);
-            userHistory = quizHistory.get(userId) || {
-              userId,
-              quizzes: [],
-              totalQuizzes: 0,
-              averageScore: 0,
-              lastQuizDate: null,
-              levelAssessmentDone: false
-            };
-          }
         }
 
         userHistory.quizzes.push(quizResult);
         userHistory.totalQuizzes += 1;
         userHistory.lastQuizDate = quizResult.timestamp;
         
+        if (isLevelAssessment) {
+          userHistory.levelAssessmentDone = true;
+        }
+
         const totalScore = userHistory.quizzes.reduce((sum, quiz) => sum + quiz.score, 0);
         userHistory.averageScore = totalScore / userHistory.totalQuizzes;
 
-        // บันทึกลง Firebase เป็นอันดับแรก
-        if (db) {
-          try {
+        // Save: try Supabase first, fallback to Firestore, then memory
+        try {
+          if (supabase) {
+            const payload = {
+              user_id: userId,
+              quizzes: userHistory.quizzes,
+              total_quizzes: userHistory.totalQuizzes,
+              average_score: userHistory.averageScore,
+              last_quiz_date: userHistory.lastQuizDate,
+              level_assessment_done: userHistory.levelAssessmentDone
+            };
+            const { error } = await supabase.from('quiz_history').upsert([payload], { onConflict: 'user_id' });
+            if (error) throw error;
+            console.log('✅ Quiz history saved to Supabase for user:', userId);
+          } else if (db) {
             await db.collection('quizHistory').doc(userId).set(userHistory);
-            console.log('✅ AI Quiz result saved to Firebase for user:', userId);
-          } catch (firebaseError) {
-            console.warn('❌ Firebase save error:', firebaseError.message);
-            // ถ้า Firebase save ไม่ได้ ให้เก็บใน memory เป็น backup
+            console.log('✅ Quiz history saved to Firebase for user:', userId);
+          } else {
             quizHistory.set(userId, userHistory);
+            console.log('📝 Quiz history saved to memory for user:', userId);
           }
-        } else {
-          // เก็บใน memory เฉพาะเมื่อไม่มี Firebase
+        } catch (error) {
+          console.warn('❌ Error saving quiz history to DB:', error.message || error);
           quizHistory.set(userId, userHistory);
-          console.log('📝 AI Quiz result saved to memory for user:', userId);
         }
       } catch (historyError) {
         console.error("Error saving quiz history:", historyError);
@@ -2358,14 +2374,19 @@ setInterval(() => {
 app.get("/api/player-history/:playerId", async (req, res) => {
   try {
     const { playerId } = req.params;
-    
-    if (db) {
+
+    // Try Supabase first
+    if (supabase) {
       try {
-        const doc = await db.collection('playerHistory').doc(playerId).get();
-        if (doc.exists) {
-          return res.json(doc.data());
+        const { data, error } = await supabase
+          .from('player_history')
+          .select('*')
+          .eq('player_id', playerId)
+          .limit(1);
+        if (error) throw error;
+        if (data && data.length > 0) {
+          return res.json(data[0].data || data[0]);
         }
-        // ถ้าไม่มีประวัติ ให้สร้างข้อมูลเริ่มต้น
         const defaultHistory = {
           playerId,
           playerName: 'Unknown',
@@ -2377,14 +2398,13 @@ app.get("/api/player-history/:playerId", async (req, res) => {
           games: []
         };
         return res.json(defaultHistory);
-      } catch (firebaseError) {
-        console.warn('Firebase read error:', firebaseError.message);
-        return res.status(500).json({ error: 'Database unavailable' });
+      } catch (supabaseError) {
+        console.warn('Supabase read error:', supabaseError.message);
       }
-    } else {
-      return res.status(503).json({ error: 'Database service unavailable' });
     }
-    
+
+    return res.status(503).json({ error: 'Database service unavailable' });
+
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -2394,37 +2414,34 @@ app.get("/api/player-history/:playerId", async (req, res) => {
 app.get("/api/leaderboard", async (req, res) => {
   try {
     const { limit = 10 } = req.query;
-    
-    if (db) {
+
+    if (supabase) {
       try {
-        const snapshot = await db.collection('playerHistory')
-          .orderBy('averageProfit', 'desc')
-          .limit(parseInt(limit))
-          .get();
-          
-        const leaderboard = [];
-        snapshot.forEach(doc => {
-          const data = doc.data();
-          leaderboard.push({
-            playerId: data.playerId,
-            playerName: data.playerName,
-            totalGames: data.totalGames,
-            averageProfit: data.averageProfit,
-            wins: data.wins,
-            losses: data.losses,
-            winRate: data.totalGames > 0 ? (data.wins / data.totalGames * 100) : 0
-          });
-        });
-        
+        const { data, error } = await supabase
+          .from('player_history')
+          .select('player_id, player_name, total_games, average_profit, wins, losses')
+          .order('average_profit', { ascending: false })
+          .limit(parseInt(limit));
+        if (error) throw error;
+
+        const leaderboard = (data || []).map(row => ({
+          playerId: row.player_id,
+          playerName: row.player_name,
+          totalGames: row.total_games,
+          averageProfit: row.average_profit,
+          wins: row.wins,
+          losses: row.losses,
+          winRate: row.total_games > 0 ? (row.wins / row.total_games * 100) : 0
+        }));
+
         return res.json({ leaderboard });
-      } catch (firebaseError) {
-        console.warn('Firebase read error:', firebaseError.message);
-        return res.status(500).json({ error: 'Database unavailable' });
+      } catch (supabaseError) {
+        console.warn('Supabase read error:', supabaseError.message);
       }
-    } else {
-      return res.status(503).json({ error: 'Database service unavailable' });
     }
-    
+
+    return res.status(503).json({ error: 'Database service unavailable' });
+
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -2434,37 +2451,127 @@ app.get("/api/leaderboard", async (req, res) => {
 app.get("/api/recent-games", async (req, res) => {
   try {
     const { limit = 20 } = req.query;
-    
-    if (db) {
+
+    if (supabase) {
       try {
-        const snapshot = await db.collection('gameResults')
-          .orderBy('endTime', 'desc')
-          .limit(parseInt(limit))
-          .get();
-          
-        const games = [];
-        snapshot.forEach(doc => {
-          const data = doc.data();
-          games.push({
-            gameId: doc.id,
-            roomId: data.roomId,
-            symbol: data.symbol,
-            duration: data.duration,
-            playerCount: data.playerCount,
-            endTime: data.endTime,
-            winner: data.results[0] // ผู้ชนะคือคนแรกใน results ที่เรียงแล้ว
-          });
-        });
-        
+        const { data, error } = await supabase
+          .from('game_results')
+          .select('id, room_id, symbol, duration, player_count, end_time, results')
+          .order('end_time', { ascending: false })
+          .limit(parseInt(limit));
+        if (error) throw error;
+
+        const games = (data || []).map(row => ({
+          gameId: row.id,
+          roomId: row.room_id,
+          symbol: row.symbol,
+          duration: row.duration,
+          playerCount: row.player_count,
+          endTime: row.end_time,
+          winner: Array.isArray(row.results) ? row.results[0] : null
+        }));
+
         return res.json({ games });
-      } catch (firebaseError) {
-        console.warn('Firebase read error:', firebaseError.message);
-        return res.status(500).json({ error: 'Database unavailable' });
+      } catch (supabaseError) {
+        console.warn('Supabase read error:', supabaseError.message);
       }
-    } else {
-      return res.status(503).json({ error: 'Database service unavailable' });
     }
-    
+
+    return res.status(503).json({ error: 'Database service unavailable' });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// =============================================================================
+// SOLO/INDIVIDUAL GAME HISTORY APIs
+// =============================================================================
+
+// Save individual game history (solo or multiplayer per-user record)
+app.post("/api/game-history", async (req, res) => {
+  try {
+    const {
+      userId, gameType, result, score, profit, profitPercentage,
+      finalBalance, difficulty, market, symbol, duration, totalTrades,
+      gameMode, roomCode, data: extraData
+    } = req.body;
+
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+    if (!supabase) return res.status(503).json({ error: 'Database service unavailable' });
+
+    const row = {
+      user_id: userId,
+      game_type: gameType || 'solo',
+      result: result || null,
+      score: Number(score) || 0,
+      profit: Number(profit) || 0,
+      profit_percentage: Number(profitPercentage) || 0,
+      final_balance: Number(finalBalance) || 0,
+      difficulty: difficulty || null,
+      market: market || null,
+      symbol: symbol || null,
+      duration: Number(duration) || null,
+      total_trades: Number(totalTrades) || 0,
+      game_mode: gameMode || 'solo',
+      room_code: roomCode || null,
+      data: extraData || null,
+    };
+
+    const { data, error } = await supabase.from('game_history').insert([row]).select('id').single();
+    if (error) throw error;
+
+    // Also update player_history aggregate
+    try {
+      const profitValue = Number(profit) || 0;
+      const { data: existing } = await supabase
+        .from('player_history').select('*').eq('player_id', userId).limit(1).maybeSingle();
+      const prev = existing || { player_id: userId, total_games: 0, total_profit: 0, wins: 0, losses: 0, data: { games: [] } };
+      const newTotal = Number(prev.total_games || 0) + 1;
+      const newProfit = Number(prev.total_profit || 0) + profitValue;
+      await supabase.from('player_history').upsert([{
+        player_id: userId,
+        player_name: req.body.playerName || 'Player',
+        total_games: newTotal,
+        total_profit: newProfit,
+        average_profit: newTotal > 0 ? newProfit / newTotal : 0,
+        wins: Number(prev.wins || 0) + (profitValue > 0 ? 1 : 0),
+        losses: Number(prev.losses || 0) + (profitValue <= 0 ? 1 : 0),
+        data: { ...prev.data, games: [...(prev.data?.games || []), { game_id: data.id, profit: profitValue }] },
+        updated_at: new Date().toISOString()
+      }], { onConflict: 'player_id' });
+    } catch (aggErr) {
+      console.warn('⚠️ Could not update player_history aggregate:', aggErr.message);
+    }
+
+    res.json({ success: true, id: data.id });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get game history for a user
+app.get("/api/game-history/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { limit = 50, gameMode } = req.query;
+
+    if (!supabase) return res.status(503).json({ error: 'Database service unavailable' });
+
+    let query = supabase
+      .from('game_history')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(parseInt(limit));
+
+    if (gameMode) query = query.eq('game_mode', gameMode);
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    res.json({ games: data || [] });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -2711,7 +2818,7 @@ const HOST = process.env.HOST || '0.0.0.0'; // Bind to all interfaces
 server.listen(PORT, HOST, () => {
   console.log(`🚀 Server running on ${HOST}:${PORT}`);
   console.log(`📡 Socket.IO enabled for multiplayer gaming`);
-  console.log(`🔥 Firebase status: ${db ? 'Connected' : 'Using memory fallback'}`);
+  console.log(`🗄️  Supabase status: ${supabase ? 'Connected' : 'Using memory fallback'}`);
 }).on('error', (error) => {
   console.error('🚨 Server startup error:', error);
   if (error.code === 'EADDRINUSE') {

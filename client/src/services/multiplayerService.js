@@ -48,16 +48,19 @@ class MultiplayerService {
     console.log('🔌 Attempting to connect with auth...');
     
     try {
-      // Import Firebase auth
-      const { auth } = await import('../firebase/firebase');
-      
+      // Get current user from Supabase auth
+      const { supabase } = await import('../supabaseClient');
+      const { data: { session } } = await supabase.auth.getSession();
+      const user = session?.user || null;
+
       return new Promise((resolve, reject) => {
-        const unsubscribe = auth.onAuthStateChanged((user) => {
-          unsubscribe();
           try {
             if (user) {
-              console.log('👤 User authenticated:', user.uid);
-              const userName = user.displayName || user.email?.split('@')[0] || 'Anonymous';
+              console.log('👤 User authenticated:', user.id);
+              const displayName = user.user_metadata?.full_name || user.user_metadata?.displayName || user.email?.split('@')[0] || 'Anonymous';
+              user.uid = user.id; // normalize
+              user.displayName = displayName;
+              const userName = displayName;
               const socket = this.connect(user.uid, userName);
               
               // รอให้เชื่อมต่อสำเร็จ
@@ -109,13 +112,6 @@ class MultiplayerService {
             console.error('❌ Connection setup error:', connectError);
             reject(connectError);
           }
-        });
-        
-        // Timeout หากไม่ได้ auth ภายใน 5 วินาที
-        setTimeout(() => {
-          unsubscribe();
-          reject(new Error('Auth timeout - ไม่สามารถตรวจสอบสิทธิ์ได้'));
-        }, 5000);
       });
     } catch (error) {
       console.error('❌ ConnectWithAuth error:', error);
@@ -336,10 +332,22 @@ class MultiplayerService {
       return Promise.reject(new Error('Not connected to server'));
     }
 
-    // Get current user from Firebase Auth
-    const { auth } = await import('../firebase/firebase');
-    const currentUser = auth.currentUser;
-    
+    // Skip rejoin if already in this room (prevents double-join from JoinGame + WaitingRoom)
+    if (this.currentRoom === roomId) {
+      console.log('✅ Already in room', roomId, '— skipping rejoin');
+      return { success: true, roomCode: roomId };
+    }
+
+    // Get current user from Supabase auth
+    const { supabase } = await import('../supabaseClient');
+    const { data: { session } } = await supabase.auth.getSession();
+    const supabaseUser = session?.user || null;
+    const currentUser = supabaseUser ? {
+      uid: supabaseUser.id,
+      displayName: supabaseUser.user_metadata?.full_name || supabaseUser.user_metadata?.displayName || supabaseUser.email?.split('@')[0] || 'Player',
+      email: supabaseUser.email
+    } : null;
+
     return new Promise((resolve, reject) => {
       // ตั้งค่า timeout
       const timeout = setTimeout(() => {
@@ -376,12 +384,15 @@ class MultiplayerService {
   }
 
   // ออกจากห้อง
-  leaveRoom() {
-    if (!this.socket?.connected || !this.currentRoom) {
+  leaveRoom(roomCode) {
+    if (!this.socket?.connected) {
       return false;
     }
-
-    this.socket.emit('leave-room', { roomId: this.currentRoom });
+    const targetRoom = roomCode || this.currentRoom;
+    if (!targetRoom) {
+      return false;
+    }
+    this.socket.emit('leave-room', { roomId: targetRoom });
     this.currentRoom = null;
     this.currentPlayers = [];
     return true;
@@ -543,28 +554,24 @@ class MultiplayerService {
     }
   }
 
-  // Update player data directly to Firebase
+  // Update player data via socket
   async updatePlayerData(roomCode, playerData) {
     try {
-      // Import Firebase functions
-      const { firestore: db, doc, updateDoc } = await import('../firebase/firebase');
-      
-      // Update Firebase directly
-      const playerRef = doc(db, 'rooms', roomCode, 'players', playerData.playerId);
       const updateData = {
         balance: playerData.balance,
         position: playerData.position,
         totalValue: playerData.totalValue,
-        lastActive: new Date(),
+        lastActive: new Date().toISOString(),
         timestamp: playerData.timestamp || Date.now()
       };
-      
-      await updateDoc(playerRef, updateData);
-      console.log('✅ Player data updated to Firebase:', updateData);
-      
+
+      if (this.socket?.connected) {
+        this.socket.emit('update-player-data', { roomCode, playerData: updateData });
+      }
+      console.log('✅ Player data sent via socket:', updateData);
       return Promise.resolve(updateData);
     } catch (error) {
-      console.error('❌ Error updating player data to Firebase:', error);
+      console.error('❌ Error updating player data:', error);
       return Promise.reject(error);
     }
   }
@@ -834,33 +841,20 @@ class MultiplayerService {
 
       console.log('🔔 Setting up room subscription for:', roomCode);
 
-      // Use Firebase subscription utility
-      import('../utils/firebaseSubscriptions').then(({ subscribeToRoomData }) => {
-        const unsubscribe = subscribeToRoomData(roomCode, callback);
-        this.roomUnsubscribe = unsubscribe;
-      }).catch(error => {
-        console.error('❌ Error importing Firebase subscriptions:', error);
-      });
-
-      // Listen to Socket.IO events (but reduce logging)
-      if (this.socket && !this.socketRoomListeners) {
-        this.socketRoomListeners = true;
-        
-        this.socket.on('room-updated', (data) => {
-          // Only log important room updates, not every change
+      // Use Socket.IO for real-time room updates
+      if (this.socket) {
+        const onRoomUpdated = (data) => {
           if (data.status && data.status !== this.lastRoomStatus) {
             console.log('🏠 Room status changed:', data.status);
             this.lastRoomStatus = data.status;
           }
-        });
-        
-        this.socket.on('player-joined', (data) => {
-          console.log('👤 Socket player joined:', data?.playerName);
-        });
-        
-        this.socket.on('player-left', (data) => {
-          console.log('👤 Socket player left:', data?.playerName);
-        });
+          callback(data);
+        };
+        this.socket.on('room-updated', onRoomUpdated);
+
+        this.roomUnsubscribe = () => {
+          this.socket?.off('room-updated', onRoomUpdated);
+        };
       }
 
       return () => {
@@ -892,34 +886,41 @@ class MultiplayerService {
 
       console.log('👥 Setting up players subscription for:', roomCode);
 
-      // Use Firebase subscription utility
-      import('../utils/firebaseSubscriptions').then(({ subscribeToRoomPlayers }) => {
-        const unsubscribe = subscribeToRoomPlayers(roomCode, (snapshot) => {
-          console.log(`👥 Firebase players snapshot updated: ${snapshot.size} players`);
-          callback(snapshot);
-        });
-        this.playersUnsubscribe = unsubscribe;
-      }).catch(error => {
-        console.error('❌ Error importing Firebase subscriptions:', error);
-      });
+      // Use Socket.IO for real-time player updates
+      if (this.socket) {
+        const buildSnapshot = (rawPlayers) => {
+          const players = Array.isArray(rawPlayers) ? rawPlayers : (rawPlayers?.players || []);
+          return {
+            forEach: (fn) => players.forEach(p => fn({
+              id: p.uid || p.id,
+              data: () => ({
+                ...p,
+                uid: p.uid || p.id,
+                displayName: p.displayName || p.name,
+              })
+            }))
+          };
+        };
 
-      // Listen to Socket.IO events (but reduce logging)
-      if (this.socket && !this.socketPlayersListeners) {
-        this.socketPlayersListeners = true;
-        
-        this.socket.on('players-updated', (data) => {
-          if (Math.random() < 0.2) { // Reduce logging frequency
-            console.log('👥 Socket players updated');
-          }
-        });
-        
-        this.socket.on('player-joined', (data) => {
+        const onPlayersUpdated = (data) => callback(buildSnapshot(data));
+        const onPlayerJoined = (data) => {
           console.log('👤 Player joined:', data?.playerName);
-        });
-        
-        this.socket.on('player-left', (data) => {
-          console.log('👤 Player left:', data?.playerName);
-        });
+          callback(buildSnapshot(data));
+        };
+        const onPlayerLeft = (data) => {
+          console.log('👤 Player left:', data?.playerName || data?.playerId);
+          if (data?.players) callback(buildSnapshot(data));
+        };
+
+        this.socket.on('players-updated', onPlayersUpdated);
+        this.socket.on('player-joined', onPlayerJoined);
+        this.socket.on('player-left', onPlayerLeft);
+
+        this.playersUnsubscribe = () => {
+          this.socket?.off('players-updated', onPlayersUpdated);
+          this.socket?.off('player-joined', onPlayerJoined);
+          this.socket?.off('player-left', onPlayerLeft);
+        };
       }
 
       return () => {

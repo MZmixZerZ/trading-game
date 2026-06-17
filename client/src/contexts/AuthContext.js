@@ -1,9 +1,7 @@
 "use client"
 
-import { createContext, useState, useContext, useEffect } from "react"
-import { auth, firestore } from "../firebase/firebase"
-import { onAuthStateChanged, signOut } from "firebase/auth"
-import { doc, getDoc, setDoc, updateDoc } from "firebase/firestore"
+import { createContext, useState, useContext, useEffect, useCallback } from "react"
+import { supabase, normalizeSupabaseUser } from "../supabaseClient"
 
 const AuthContext = createContext()
 
@@ -14,96 +12,104 @@ export function useAuth() {
 export function AuthProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [completedAssessments, setCompletedAssessments] = useState(new Set()) // เก็บ UID ที่ทำ Assessment แล้ว
+  const [completedAssessments, setCompletedAssessments] = useState(new Set())
   const [authError, setAuthError] = useState(null)
+  const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || ''
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setCurrentUser(user)
-      if (user) {
-        // โหลดข้อมูลจาก Firestore เมื่อ user login
-        await loadAssessmentStatus(user.uid)
-      } else {
-        setCompletedAssessments(new Set())
-      }
-      setLoading(false)
-      setAuthError(null) // Clear auth error on successful auth state change
-    }, (error) => {
-      console.error('Auth state change error:', error)
-      setAuthError(error.message)
-      setLoading(false)
-    })
-    return unsubscribe
-  }, [])
-
-  // โหลดสถานะการทำ Assessment จาก Firestore
-  const loadAssessmentStatus = async (userId) => {
+  const loadAssessmentStatus = useCallback(async (userId) => {
     try {
-      const userDoc = await getDoc(doc(firestore, 'users', userId))
-      if (userDoc.exists()) {
-        const userData = userDoc.data()
-        if (userData.hasCompletedAssessment) {
+      const response = await fetch(`${API_BASE_URL}/api/quiz/history/${userId}`)
+      if (response.ok) {
+        const data = await response.json()
+        if (data.levelAssessmentDone) {
           setCompletedAssessments(new Set([userId]))
-          console.log('✅ User has completed assessment (loaded from Firestore)')
+          console.log('✅ User has completed assessment (loaded from Supabase backend)')
         }
       }
     } catch (error) {
       console.error('❌ Error loading assessment status:', error)
-      // Fallback to localStorage
       const saved = JSON.parse(localStorage.getItem('completedAssessments') || '[]')
       setCompletedAssessments(new Set(saved))
     }
-  }
+  }, [API_BASE_URL])
 
-  // ฟังก์ชันเช็คว่า User ทำ Assessment Quiz แล้วหรือยัง
+  useEffect(() => {
+    const loadSession = async () => {
+      try {
+        const { data } = await supabase.auth.getSession()
+        const user = data?.session?.user ? normalizeSupabaseUser(data.session.user) : null
+        setCurrentUser(user)
+        if (user) {
+          await loadAssessmentStatus(user.uid)
+        } else {
+          const saved = JSON.parse(localStorage.getItem('completedAssessments') || '[]')
+          setCompletedAssessments(new Set(saved))
+        }
+      } catch (error) {
+        console.error('Auth init error:', error)
+        setAuthError(error.message)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadSession()
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const supabaseUser = session?.user ? normalizeSupabaseUser(session.user) : null
+      setCurrentUser(supabaseUser)
+      if (supabaseUser) {
+        await loadAssessmentStatus(supabaseUser.uid)
+      } else {
+        const saved = JSON.parse(localStorage.getItem('completedAssessments') || '[]')
+        setCompletedAssessments(new Set(saved))
+      }
+      setLoading(false)
+      setAuthError(null)
+    })
+
+    return () => authListener?.subscription?.unsubscribe()
+  }, [loadAssessmentStatus])
+
   const hasCompletedAssessment = () => {
     if (!currentUser) return false
     return completedAssessments.has(currentUser.uid)
   }
 
-  // ฟังก์ชันบันทึกว่า User ทำ Assessment Quiz แล้ว
   const markAssessmentCompleted = async () => {
     if (!currentUser) return
-    
+
     try {
-      // บันทึกลง Firestore
-      const userRef = doc(firestore, 'users', currentUser.uid)
-      const userDoc = await getDoc(userRef)
-      
-      if (userDoc.exists()) {
-        // Update existing document
-        await updateDoc(userRef, {
-          hasCompletedAssessment: true,
-          assessmentCompletedAt: new Date().toISOString(),
-          lastUpdated: new Date().toISOString()
+      const response = await fetch(`${API_BASE_URL}/api/quiz/history/${currentUser.uid}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          quizData: {
+            score: 0,
+            totalQuestions: 0,
+            correctAnswers: 0,
+            quizType: 'levelAssessment',
+            details: []
+          },
+          isLevelAssessment: true
         })
-      } else {
-        // Create new document
-        await setDoc(userRef, {
-          uid: currentUser.uid,
-          email: currentUser.email,
-          hasCompletedAssessment: true,
-          assessmentCompletedAt: new Date().toISOString(),
-          createdAt: new Date().toISOString(),
-          lastUpdated: new Date().toISOString()
-        })
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to save assessment: ${response.statusText}`)
       }
-      
-      // Update local state
+
       setCompletedAssessments(prev => new Set([...prev, currentUser.uid]))
-      
-      // บันทึกลง localStorage เป็น backup
+
       const saved = JSON.parse(localStorage.getItem('completedAssessments') || '[]')
       if (!saved.includes(currentUser.uid)) {
         saved.push(currentUser.uid)
         localStorage.setItem('completedAssessments', JSON.stringify(saved))
       }
-      
-      console.log('✅ Assessment completion status saved to Firestore')
+
+      console.log('✅ Assessment completion status saved to Supabase backend')
     } catch (error) {
-      console.error('❌ Error saving assessment status to Firestore:', error)
-      
-      // Fallback to localStorage only
+      console.error('❌ Error saving assessment status:', error)
       setCompletedAssessments(prev => new Set([...prev, currentUser.uid]))
       const saved = JSON.parse(localStorage.getItem('completedAssessments') || '[]')
       if (!saved.includes(currentUser.uid)) {
@@ -113,14 +119,15 @@ export function AuthProvider({ children }) {
     }
   }
 
-  // โหลดข้อมูลจาก localStorage ตอน init (removed - now using Firestore)
-
-  const logout = () => {
-    signOut(auth).catch(error => {
+  const logout = async () => {
+    try {
+      await supabase.auth.signOut()
+      setCurrentUser(null)
+      setCompletedAssessments(new Set())
+    } catch (error) {
       console.error('Logout error:', error)
       setAuthError(error.message)
-    })
-    setCurrentUser(null)
+    }
   }
 
   const value = {

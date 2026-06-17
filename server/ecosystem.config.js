@@ -39,7 +39,9 @@ module.exports = {
         PORT: 5000,
         SERVER_PORT: 5000,
         CLIENT_URL: 'http://localhost:3412',
-        FRONTEND_URL: 'http://localhost:3412'
+        FRONTEND_URL: 'http://localhost:3412',
+        SUPABASE_URL: process.env.SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY
       },
       env_production: {
         NODE_ENV: 'production',
@@ -51,6 +53,8 @@ module.exports = {
         FRONTEND_URL: process.env.FRONTEND_URL,
         PROXY_SERVER_URL: process.env.PROXY_SERVER_URL,
         GOOGLE_API_KEY: process.env.GOOGLE_API_KEY,
+        SUPABASE_URL: process.env.SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
         FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID,
         GOOGLE_APPLICATION_CREDENTIALS: process.env.GOOGLE_APPLICATION_CREDENTIALS
       },

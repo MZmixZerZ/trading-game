@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import ReactDOM from "react-dom";
 import { FaUserAlt, FaRegClock, FaCog } from "react-icons/fa";
-import { auth } from "../../firebase/firebase";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "../../contexts/AuthContext";
 import { getRandomTimePeriod } from "../../services/marketData";
 import { useMultiplayer } from "../../contexts/MultiplayerContext";
 
@@ -15,6 +15,7 @@ export default function RoomSetting({ onClose, embedded = false, compact = false
   const [lastCreateTime, setLastCreateTime] = useState(0);
   const navigate = useNavigate();
   const { createRoom, error: multiplayerError } = useMultiplayer();
+  const { currentUser } = useAuth();
 
   // Use refs to avoid stale closures
   const maxTimeRef = useRef(maxTime);
@@ -65,8 +66,7 @@ export default function RoomSetting({ onClose, embedded = false, compact = false
       return;
     }
 
-    const user = auth.currentUser;
-    if (!user) {
+    if (!currentUser) {
       setErrorMsg("คุณต้องเข้าสู่ระบบก่อน");
       setLoading(false);
       navigate('/login');
@@ -225,7 +225,7 @@ export default function RoomSetting({ onClose, embedded = false, compact = false
     } finally {
       setLoading(false);
     }
-  }, [navigate, createRoom]); // เหลือแค่ dependencies ที่จำเป็นจริงๆ
+  }, [navigate, createRoom, currentUser]);
 
   // Reset error when component unmounts
   useEffect(() => {

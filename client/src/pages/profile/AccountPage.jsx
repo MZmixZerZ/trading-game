@@ -16,24 +16,21 @@
  */
 
 import React, { useState, useEffect, useCallback } from "react";
-import { auth } from "../../firebase/firebase";
-import { onAuthStateChanged, signOut, updateProfile } from "firebase/auth";
+import { useAuth } from "../../contexts/AuthContext";
+import { supabase } from "../../supabaseClient";
 import GameHeader from "../../components/common/GameHeader";
 import { CircleUserRound, Trophy, Star, Award, Target, Brain, BookOpen } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { firestore } from "../../firebase/firebase";
-import { doc, updateDoc, getDoc, collection, query, where, getDocs } from "firebase/firestore";
 import { DIFFICULTY_NICKNAMES, getHighestNickname, getAllEarnedNicknames, RARITY_COLORS, RARITY_BORDERS, RARITY_BACKGROUNDS } from "../../constants/nicknames";
 import { useUserProfile } from "../../contexts/UserProfileContext";
 
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '';
+
 export default function AccountPage() {
   const navigate = useNavigate();
+  const { currentUser: authUser, logout } = useAuth();
   const { quizHistory, loading: profileLoading, fetchProfile, fetchQuizHistory } = useUserProfile();
-  
-  // ========== State Variables - ตัวแปรสถานะ ==========
-  
-  /** @type {Object|null} ข้อมูลผู้ใช้ที่เข้าสู่ระบบ */
+
   const [user, setUser] = useState(null);
   
   /** @type {string} ข้อความแสดงข้อผิดพลาด */
@@ -163,74 +160,40 @@ export default function AccountPage() {
 
   const fetchUserProfile = async (uid) => {
     try {
-      // ดึงข้อมูลจาก gameHistory collection จริงๆ เพื่อให้ตรงกับ GameHistoryPage
-      const gameHistoryQuery = query(
-        collection(firestore, 'gameHistory'),
-        where('userId', '==', uid),
-        where('gameType', '==', 'solo')
-      );
-      
-      let gameSnapshot;
-      try {
-        gameSnapshot = await getDocs(gameHistoryQuery);
-      } catch (queryError) {
-        console.warn('⚠️ Account stats query failed, trying fallback:', queryError.message);
-        
-        // Fallback without compound where clause
-        const fallbackQuery = query(
-          collection(firestore, 'gameHistory'),
-          where('userId', '==', uid)
-        );
-        
-        gameSnapshot = await getDocs(fallbackQuery);
-      }
-      
-      let actualGamesPlayed = 0;
-      let actualGamesWon = 0;
-      let totalScore = 0;
-      
-      gameSnapshot.forEach(doc => {
-        const data = doc.data();
-        // Filter for solo games if using fallback query
-        if (data.gameType === 'solo' || !data.gameType) {
-          actualGamesPlayed++;
-          if (data.result === 'win' || (data.profit && data.profit > 0)) {
-            actualGamesWon++;
-          }
-          totalScore += data.score || 0;
-        }
-      });
-      
-      // คำนวณ win rate จริง
+      const [historyRes, profileRes] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/game-history/${uid}?limit=1000`),
+        fetch(`${API_BASE_URL}/api/profile/${uid}`)
+      ]);
+      const { games = [] } = historyRes.ok ? await historyRes.json() : {};
+      const profile = profileRes.ok ? await profileRes.json() : {};
+
+      const soloGames = games.filter(g => g.game_type === 'solo');
+      const actualGamesPlayed = soloGames.length;
+      const actualGamesWon = soloGames.filter(g => g.result === 'win' || g.profit > 0).length;
+      const totalScore = soloGames.reduce((sum, g) => sum + (g.score || 0), 0);
       const actualWinRate = actualGamesPlayed > 0 ? (actualGamesWon / actualGamesPlayed) * 100 : 0;
-      
-      // ดึงข้อมูล user profile อื่นๆ
-      const userRef = doc(firestore, "users", uid);
-      const userSnap = await getDoc(userRef);
-      const userData = userSnap.exists() ? userSnap.data() : {};
-      
-      // Load Solo Challenge stats
-      const earnedNicknames = userData.soloEarnedNicknames || [];
-      const currentNickname = getHighestNickname(userData.soloCompletedLevels || []);
-      
+
+      const completedLevels = profile.soloCompletedLevels || [];
+      const earnedNicknames = profile.soloEarnedNicknames || [];
+      const currentNickname = getHighestNickname(completedLevels);
+
       setSoloStats({
-        currentLevel: userData.soloCurrentLevel || 'tutorial',
-        completedLevels: userData.soloCompletedLevels || [],
-        totalChallenges: userData.soloTotalChallenges || 0,
-        winRate: actualWinRate, // ใช้ win rate จริง
-        earnedNicknames: earnedNicknames,
-        currentNickname: currentNickname,
-        // ใช้ข้อมูลจริงจาก gameHistory
+        currentLevel: profile.soloCurrentLevel || 'tutorial',
+        completedLevels,
+        totalChallenges: profile.soloTotalChallenges || 0,
+        winRate: actualWinRate,
+        earnedNicknames,
+        currentNickname,
         soloScore: totalScore,
         soloGamesPlayed: actualGamesPlayed,
         soloGamesWon: actualGamesWon,
-        totalScore: totalScore,
-        gamesPlayed: actualGamesPlayed, // ตรงกับ GameHistoryPage
+        totalScore,
+        gamesPlayed: actualGamesPlayed,
         gamesWon: actualGamesWon,
-        lastPlayedSolo: userData.lastPlayedSolo || null
+        lastPlayedSolo: profile.lastPlayedSolo || null
       });
-      
-      return userData;
+
+      return profile;
     } catch (err) {
       console.error("Error fetching user profile:", err);
       return null;
@@ -254,34 +217,31 @@ export default function AccountPage() {
   }, [quizHistory]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      if (currentUser) {
-        setUser(currentUser);
+    const load = async () => {
+      if (authUser) {
+        setUser(authUser);
         setError("");
+        setFullname(authUser.displayName || "");
 
-        // Set fullname
-        setFullname(currentUser.displayName || "");
+        const profile = await fetchUserProfile(authUser.uid);
 
-        // Try fetching Firestore data if needed
-        const profile = await fetchUserProfile(currentUser.uid);
-
-        if (!currentUser.photoURL && profile?.profilePicURL) {
+        if (!authUser.photoURL && profile?.profilePicURL) {
           setAvatar(profile.profilePicURL);
         } else {
-          setAvatar(currentUser.photoURL || "");
+          setAvatar(authUser.photoURL || "");
         }
 
-        if (!currentUser.displayName && profile?.fullName) {
+        if (!authUser.displayName && profile?.fullName) {
           setFullname(profile.fullName);
         }
       } else {
         setUser(null);
         setError("Please log in to view your account details.");
       }
-    });
-
-    return () => unsubscribe();
-  }, []);
+    };
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser?.uid]);
   
   // Auto-refresh on page focus (when user comes back to the page)
   useEffect(() => {
@@ -298,7 +258,7 @@ export default function AccountPage() {
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      await logout();
       navigate("/login");
     } catch (error) {
       setError("Error signing out: " + error.message);
@@ -307,23 +267,18 @@ export default function AccountPage() {
 
   const handleSave = async () => {
     try {
-      const currentUser = auth.currentUser;
-      if (currentUser) {
-        // Update Firebase Auth
-        await updateProfile(currentUser, {
-          displayName: fullname,
-          photoURL: avatar || null,
+      if (authUser) {
+        await supabase.auth.updateUser({
+          data: { full_name: fullname, displayName: fullname }
         });
 
-        // Update Firestore
-        const userRef = doc(firestore, "users", currentUser.uid);
-        await updateDoc(userRef, {
-          fullName: fullname,
-          profilePicURL: avatar,
+        await fetch(`${API_BASE_URL}/api/profile/${authUser.uid}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ fullName: fullname, profilePicURL: avatar })
         });
 
-        await currentUser.reload();
-        setUser(auth.currentUser);
+        setUser({ ...authUser, displayName: fullname });
         setIsEditing(false);
       }
     } catch (err) {
@@ -331,35 +286,24 @@ export default function AccountPage() {
     }
   };
 
-  const handleCancel = async () => {
-    if (auth.currentUser) {
-      setFullname(auth.currentUser.displayName || "");
-      setAvatar(auth.currentUser.photoURL || "");
-    }
+  const handleCancel = () => {
+    setFullname(authUser?.displayName || "");
+    setAvatar(authUser?.photoURL || "");
     setIsEditing(false);
   };
 
   const uploadProfilePicture = async (file) => {
-    if (!file) return;
-
+    if (!file || !authUser) return;
     try {
-      const user = auth.currentUser;
-      if (!user) throw new Error("User not authenticated");
+      const filePath = `avatars/${authUser.uid}.jpg`;
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(filePath, file, { upsert: true, contentType: file.type });
 
-      const storage = getStorage();
-      const storageRef = ref(storage, `profilePics/${user.uid}.jpg`);
+      if (uploadError) throw uploadError;
 
-      // Upload file
-      await uploadBytes(storageRef, file);
-
-      // Get download URL
-      const downloadURL = await getDownloadURL(storageRef);
-
-      // Update Firestore
-      const userRef = doc(firestore, "users", user.uid);
-      await updateDoc(userRef, { profilePicURL: downloadURL });
-
-      return downloadURL;
+      const { data } = supabase.storage.from('avatars').getPublicUrl(filePath);
+      return data.publicUrl;
     } catch (error) {
       console.error("❌ Error uploading profile picture:", error);
       throw error;
@@ -373,15 +317,12 @@ export default function AccountPage() {
     try {
       const downloadURL = await uploadProfilePicture(file);
 
-      await updateProfile(auth.currentUser, {
-        photoURL: downloadURL,
+      await supabase.auth.updateUser({ data: { avatar_url: downloadURL } });
+      await fetch(`${API_BASE_URL}/api/profile/${authUser.uid}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profilePicURL: downloadURL })
       });
-
-      const userRef = doc(firestore, "users", auth.currentUser.uid);
-      await updateDoc(userRef, { profilePicURL: downloadURL });
-
-      await auth.currentUser.reload();
-      setUser(auth.currentUser);
 
       setAvatar(downloadURL);
     } catch (err) {

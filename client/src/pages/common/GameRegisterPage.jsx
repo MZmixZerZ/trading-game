@@ -1,13 +1,9 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { createUserWithEmailAndPassword, updateProfile, signInWithPopup, GoogleAuthProvider } from "firebase/auth";
-import { auth, firestore } from "../../firebase/firebase";
-import { doc, setDoc, getDoc } from "firebase/firestore";
+import { supabase } from "../../supabaseClient";
 import { FaEye, FaEyeSlash, FaGamepad, FaArrowLeft, FaStar, FaRocket, FaUser, FaLock, FaGem, FaFire, FaCrown } from "react-icons/fa";
 import { FcGoogle } from "react-icons/fc";
 import { FiZap, FiShield, FiAward } from "react-icons/fi";
-
-const googleProvider = new GoogleAuthProvider();
 
 export default function GameRegisterPage() {
   const navigate = useNavigate();
@@ -62,56 +58,28 @@ export default function GameRegisterPage() {
     setError("");
 
     try {
-      // Create user account
-      const userCredential = await createUserWithEmailAndPassword(
-        auth, 
-        formData.email, 
-        formData.password
-      );
-      
-      const user = userCredential.user;
-
-      // Update user profile
-      await updateProfile(user, {
-        displayName: formData.fullname
-      });
-
-      // Create user document in Firestore
-      await setDoc(doc(firestore, "users", user.uid), {
-        fullname: formData.fullname,
+      const { data, error: authError } = await supabase.auth.signUp({
         email: formData.email,
-        createdAt: new Date(),
-        level: 1,
-        experience: 0,
-        gameStats: {
-          totalGames: 0,
-          wins: 0,
-          losses: 0,
-          bestScore: 0,
-          totalProfit: 0
-        },
-        achievements: [],
-        preferences: {
-          difficulty: 'easy',
-          notifications: true
+        password: formData.password,
+        options: {
+          data: { full_name: formData.fullname, displayName: formData.fullname }
         }
       });
-
-      navigate("/menu");
-    } catch (error) {
-      console.error("Registration error:", error);
-      switch (error.code) {
-        case 'auth/email-already-in-use':
-          setError("📧 Email is already in use");
-          break;
-        case 'auth/invalid-email':
-          setError("📧 Invalid email format");
-          break;
-        case 'auth/weak-password':
-          setError("🔐 Password is too weak");
-          break;
-        default:
-          setError("❌ Failed to create account. Please try again.");
+      if (authError) throw authError;
+      if (data.session) {
+        navigate("/challenge");
+      } else {
+        setError("📧 Account created! Please check your email to confirm before logging in.");
+      }
+    } catch (err) {
+      console.error("Registration error:", err);
+      const msg = err.message || '';
+      if (msg.includes('already registered') || msg.includes('already in use')) {
+        setError("📧 Email is already in use");
+      } else if (msg.includes('password')) {
+        setError("🔐 Password is too weak");
+      } else {
+        setError("❌ Failed to create account. Please try again.");
       }
     } finally {
       setIsLoading(false);
@@ -123,42 +91,14 @@ export default function GameRegisterPage() {
     setError("");
 
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const user = result.user;
-
-      // Check if user document exists
-      const userDocRef = doc(firestore, "users", user.uid);
-      const userDoc = await getDoc(userDocRef);
-
-      if (!userDoc.exists()) {
-        // Create new user document
-        await setDoc(userDocRef, {
-          fullname: user.displayName,
-          email: user.email,
-          photoURL: user.photoURL,
-          createdAt: new Date(),
-          level: 1,
-          experience: 0,
-          gameStats: {
-            totalGames: 0,
-            wins: 0,
-            losses: 0,
-            bestScore: 0,
-            totalProfit: 0
-          },
-          achievements: [],
-          preferences: {
-            difficulty: 'easy',
-            notifications: true
-          }
-        });
-      }
-
-      navigate("/menu");
-    } catch (error) {
-      console.error("Google registration error:", error);
+      const { error: authError } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: `${window.location.origin}/challenge` }
+      });
+      if (authError) throw authError;
+    } catch (err) {
+      console.error("Google registration error:", err);
       setError("❌ Failed to create account with Google");
-    } finally {
       setIsLoading(false);
     }
   };

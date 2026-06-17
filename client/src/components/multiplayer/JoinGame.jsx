@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { FaKey } from "react-icons/fa";
-import { auth } from "../../firebase/firebase";
 import { useNavigate } from "react-router-dom";
 import { useMultiplayer } from "../../contexts/MultiplayerContext";
+import { useAuth } from "../../contexts/AuthContext";
 
 export default function JoinGame({ onClose, embedded = false, compact = false }) {
   const [pin, setPin] = useState("");
@@ -10,6 +10,7 @@ export default function JoinGame({ onClose, embedded = false, compact = false })
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { joinRoom } = useMultiplayer();
+  const { currentUser } = useAuth();
 
   const handleBackdrop = (e) => {
     if (embedded) return; // no backdrop handling in embedded mode
@@ -50,8 +51,7 @@ export default function JoinGame({ onClose, embedded = false, compact = false })
       return;
     }
 
-    const user = auth.currentUser;
-    if (!user) {
+    if (!currentUser) {
       setError("กรุณาเข้าสู่ระบบก่อน");
       setLoading(false);
       return;

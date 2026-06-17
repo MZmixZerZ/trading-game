@@ -1,27 +1,17 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { FaPlay, FaUser, FaSignOutAlt, FaGamepad, FaChartLine, FaUsers, FaQuestionCircle } from "react-icons/fa";
-import { auth } from "../../firebase/firebase";
-import { onAuthStateChanged } from "firebase/auth";
+import { useAuth } from "../../contexts/AuthContext";
 import GameHeader from "../../components/common/GameHeader";
 
 export default function MainMenuPage() {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const { currentUser: user, loading, logout } = useAuth();
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const navigate = useNavigate();
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
   const handleLogout = async () => {
     try {
-      await auth.signOut();
+      await logout();
     } catch (error) {
       console.error("Error signing out:", error);
     }

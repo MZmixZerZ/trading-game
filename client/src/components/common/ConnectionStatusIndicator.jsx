@@ -15,7 +15,7 @@ const ConnectionStatusIndicator = ({
 
   // แสดงแบบ detailed สำหรับ hybrid multiplayer
   if (showDetailed && status) {
-    const { socket = {}, firebase = 'disconnected', room } = status;
+    const { socket = {}, room } = status;
     const { isConnected: socketConnected = false, socketId } = socket;
 
     return (
@@ -35,12 +35,12 @@ const ConnectionStatusIndicator = ({
               )}
             </div>
 
-            {/* Firebase Status */}
+            {/* Supabase Status */}
             <div className={`flex items-center space-x-1 px-2 py-1 rounded ${
-              firebase === 'connected' ? 'bg-green-900 text-green-300' : 'bg-yellow-900 text-yellow-300'
+              socketConnected ? 'bg-green-900 text-green-300' : 'bg-yellow-900 text-yellow-300'
             }`}>
               <Database className="h-4 w-4" />
-              <span>Firebase</span>
+              <span>Supabase</span>
             </div>
 
             {/* Room Status */}
@@ -94,7 +94,7 @@ const ConnectionStatusIndicator = ({
         icon: reconnecting ? 
           <FaSpinner className="text-yellow-400 animate-spin" /> : 
           <FaWifi className="text-yellow-400" />,
-        text: reconnecting ? 'กำลังเชื่อมต่อใหม่...' : 'การเชื่อมต่อ Firebase ขาดหาย',
+        text: reconnecting ? 'กำลังเชื่อมต่อใหม่...' : 'การเชื่อมต่อเซิร์ฟเวอร์ขาดหาย',
         bgColor: 'bg-yellow-500/20',
         borderColor: 'border-yellow-400/30',
         textColor: 'text-yellow-300',

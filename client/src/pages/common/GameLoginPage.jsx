@@ -1,13 +1,9 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider } from "firebase/auth";
-import { auth, firestore } from "../../firebase/firebase";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { supabase } from "../../supabaseClient";
 import { FaEye, FaEyeSlash, FaGamepad, FaArrowLeft, FaRocket, FaUser, FaLock, FaStar, FaGem, FaFire } from "react-icons/fa";
 import { FcGoogle } from "react-icons/fc";
 import { FiPlay, FiZap, FiShield } from "react-icons/fi";
-
-const googleProvider = new GoogleAuthProvider();
 
 export default function GameLoginPage() {
   const navigate = useNavigate();
@@ -28,22 +24,18 @@ export default function GameLoginPage() {
     setError("");
 
     try {
-      await signInWithEmailAndPassword(auth, email, password);
-      navigate("/menu");
-    } catch (error) {
-      console.error("Login error:", error);
-      switch (error.code) {
-        case 'auth/user-not-found':
-          setError("❌ User not found");
-          break;
-        case 'auth/wrong-password':
-          setError("🔒 Incorrect password");
-          break;
-        case 'auth/invalid-email':
-          setError("📧 Invalid email format");
-          break;
-        default:
-          setError("❌ Login failed. Please try again.");
+      const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
+      if (authError) throw authError;
+      navigate("/challenge");
+    } catch (err) {
+      console.error("Login error:", err);
+      const msg = err.message || '';
+      if (msg.includes('Invalid login credentials') || msg.includes('user not found')) {
+        setError("❌ Incorrect email or password");
+      } else if (msg.includes('Email not confirmed')) {
+        setError("📧 Please confirm your email before logging in");
+      } else {
+        setError("❌ Login failed. Please try again.");
       }
     } finally {
       setIsLoading(false);
@@ -55,33 +47,14 @@ export default function GameLoginPage() {
     setError("");
 
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const user = result.user;
-
-      // Check if user document exists, if not create it
-      const userDocRef = doc(firestore, "users", user.uid);
-      const userDoc = await getDoc(userDocRef);
-
-      if (!userDoc.exists()) {
-        await setDoc(userDocRef, {
-          email: user.email,
-          displayName: user.displayName,
-          photoURL: user.photoURL,
-          createdAt: new Date(),
-          gameStats: {
-            totalGames: 0,
-            wins: 0,
-            losses: 0,
-            bestScore: 0
-          }
-        });
-      }
-
-      navigate("/menu");
-    } catch (error) {
-      console.error("Google login error:", error);
+      const { error: authError } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo: `${window.location.origin}/challenge` }
+      });
+      if (authError) throw authError;
+    } catch (err) {
+      console.error("Google login error:", err);
       setError("❌ Login failed with Google");
-    } finally {
       setIsLoading(false);
     }
   };

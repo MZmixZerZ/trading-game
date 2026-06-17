@@ -71,6 +71,10 @@ npm run install:all
 # Server (.env)
 PORT=5000
 GOOGLE_API_KEY=your_gemini_api_key
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+# Optional legacy Firestore migration/fallback
 FIREBASE_PROJECT_ID=your_project_id
 GOOGLE_APPLICATION_CREDENTIALS=./firebase-admin-key.json
 
@@ -80,7 +84,14 @@ REACT_APP_API_BASE_URL=http://localhost:5000
 REACT_APP_SOCKET_URL=http://localhost:5000
 ```
 
-### 4. รันแอปพลิเคชัน
+### 4. Supabase-first deployment and migration
+- `npm run server:check` — syntax check the backend server.
+- `npm run server:health` — call the backend `/health` endpoint after startup.
+- `npm run db:migrate:firestore-to-supabase` — migrate legacy Firestore collections into Supabase.
+
+> Note: Supabase is now the primary production persistence layer. Firebase is only required for legacy migration or optional fallback when Supabase is unavailable.
+
+### 5. รันแอปพลิเคชัน
 ```bash
 # Development
 npm run dev

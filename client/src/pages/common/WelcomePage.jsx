@@ -1,23 +1,13 @@
-import React, { useState, useEffect } from "react";
+import React from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { FaGamepad, FaUsers, FaRocket, FaFire, FaStar, FaGem } from "react-icons/fa";
 import { FiPlay, FiArrowRight, FiZap, FiTarget, FiAward } from "react-icons/fi";
-import { auth } from "../../firebase/firebase";
-import { onAuthStateChanged } from "firebase/auth";
+import { useAuth } from "../../contexts/AuthContext";
 import logo from "../../assets/logo.svg";
 
 export default function WelcomePage() {
-  const [user, setUser] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const { currentUser: user, loading: isLoading, logout } = useAuth();
   const navigate = useNavigate();
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setIsLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
 
   const handleEnterApp = () => {
     navigate("/challenge");
@@ -99,7 +89,7 @@ export default function WelcomePage() {
               👤 Profile
             </Link>
             <button
-              onClick={() => auth.signOut()}
+              onClick={() => logout()}
               className="px-4 py-2 bg-red-600/80 backdrop-blur-lg hover:bg-red-600 text-white font-medium rounded-xl shadow-lg hover:shadow-xl transition-all border border-red-500/50"
             >
               🚪 Exit

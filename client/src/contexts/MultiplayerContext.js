@@ -1,7 +1,6 @@
-import React, { createContext, useContext, useReducer, useEffect, useCallback } from 'react';
-import { doc, updateDoc } from 'firebase/firestore';
+import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef } from 'react';
 import multiplayerService from '../services/multiplayerService';
-import { auth, firestore } from '../firebase/firebase';
+import { useAuth } from './AuthContext';
 
 // Initial state
 const initialState = {
@@ -203,6 +202,11 @@ export const useMultiplayer = () => {
 // Provider component
 export const MultiplayerProvider = ({ children }) => {
   const [state, dispatch] = useReducer(multiplayerReducer, initialState);
+  const { currentUser } = useAuth();
+  const gameStateRef = useRef({ gameStarted: false, gameEnded: false });
+  useEffect(() => {
+    gameStateRef.current = { gameStarted: state.gameStarted, gameEnded: state.gameEnded };
+  }, [state.gameStarted, state.gameEnded]);
 
     // Initialize service with callbacks และ setup socket listeners
   useEffect(() => {
@@ -220,12 +224,12 @@ export const MultiplayerProvider = ({ children }) => {
         // Listen for room-joined events to get complete room data
         multiplayerService.socket.on('room-joined', (data) => {
           console.log('🏠 Room-joined data received:', data);
-          
-          // อัปเดต currentRoom ด้วยข้อมูลที่ครบถ้วน
-          dispatch({ 
-            type: MULTIPLAYER_ACTIONS.SET_CURRENT_ROOM, 
+
+          dispatch({
+            type: MULTIPLAYER_ACTIONS.SET_CURRENT_ROOM,
             payload: {
               roomCode: data.roomId,
+              hostId: data.hostId,
               symbol: data.symbol,
               market: data.market,
               settings: data.settings,
@@ -233,49 +237,21 @@ export const MultiplayerProvider = ({ children }) => {
               players: data.players
             }
           });
-          
-          dispatch({ 
-            type: MULTIPLAYER_ACTIONS.SET_IS_HOST, 
-            payload: data.isHost 
-          });
-          
-          dispatch({ 
-            type: MULTIPLAYER_ACTIONS.SET_ROOM_STATUS, 
-            payload: data.gameState || 'waiting' 
-          });
-          
-          // ✅ ใช้ setTimeout เพื่อเรียก subscriptions หลังจาก state update
-          if (data.roomId) {
-            console.log('🔄 Setting up subscriptions for room:', data.roomId);
-            setTimeout(() => {
-              // สร้าง subscription functions ขึ้นมาใหม่
-              if (multiplayerService?.subscribeToRoom) {
-                multiplayerService.subscribeToRoom(data.roomId, (snapshot) => {
-                  console.log('📡 Firebase room update:', snapshot);
-                  if (snapshot?.exists && snapshot.exists()) {
-                    const roomData = snapshot.data();
-                    const payload = { ...roomData, roomCode: snapshot.id };
-                    dispatch({ type: MULTIPLAYER_ACTIONS.SET_CURRENT_ROOM, payload });
-                  }
-                });
-              }
-              
-              if (multiplayerService?.subscribeToPlayers) {
-                multiplayerService.subscribeToPlayers(data.roomId, (snapshot) => {
-                  const players = [];
-                  snapshot.forEach(doc => {
-                    const playerData = { id: doc.id, ...doc.data() };
-                    players.push(playerData);
-                  });
-                  
-                  // Sort players by totalValue for consistent display
-                  players.sort((a, b) => (b.totalValue || 0) - (a.totalValue || 0));
-                  
-                  console.log(`📊 Firebase players updated: ${players.length} players`);
-                  dispatch({ type: MULTIPLAYER_ACTIONS.SET_PLAYERS, payload: players });
-                });
-              }
-            }, 100);
+
+          dispatch({ type: MULTIPLAYER_ACTIONS.SET_IS_HOST, payload: data.isHost });
+          dispatch({ type: MULTIPLAYER_ACTIONS.SET_ROOM_STATUS, payload: data.gameState || 'waiting' });
+
+          // Populate the players list immediately on join
+          if (data.players && Array.isArray(data.players)) {
+            const formatted = data.players.map(p => ({
+              uid: p.uid || p.id,
+              id: p.uid || p.id,
+              displayName: p.displayName || p.name,
+              name: p.displayName || p.name,
+              balance: p.balance || 100000,
+              isReady: p.isReady || false,
+            }));
+            dispatch({ type: MULTIPLAYER_ACTIONS.SET_PLAYERS, payload: formatted });
           }
         });
 
@@ -390,14 +366,14 @@ export const MultiplayerProvider = ({ children }) => {
       dispatch({ type: MULTIPLAYER_ACTIONS.SET_ERROR, payload: null });
       
       // ตรวจสอบการเข้าสู่ระบบก่อน
-      if (!auth.currentUser) {
+      if (!currentUser) {
         throw new Error('กรุณาเข้าสู่ระบบก่อน');
       }
 
       // 🔌 เชื่อมต่อกับ server ก่อนสร้างห้อง
       console.log('🔌 Connecting to multiplayer service before creating room...');
       await multiplayerService.connectWithAuth();
-      
+
       if (!multiplayerService.isConnected) {
         throw new Error('ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์ได้ กรุณาลองใหม่อีกครั้ง');
       }
@@ -405,8 +381,8 @@ export const MultiplayerProvider = ({ children }) => {
       // เตรียมข้อมูลสำหรับสร้างห้อง
       const roomData = {
         ...roomSettings,
-        hostId: auth.currentUser.uid,
-        hostName: auth.currentUser.displayName || 'Anonymous'
+        hostId: currentUser.uid,
+        hostName: currentUser.displayName || 'Anonymous'
       };
 
       console.log('✅ Connected to server, now creating room...');
@@ -506,21 +482,16 @@ export const MultiplayerProvider = ({ children }) => {
       
       dispatch({ type: MULTIPLAYER_ACTIONS.SET_LOADING, payload: true });
 
-      // ✅ 2. Host ทำการสุ่มและบันทึกลง Firebase ที่นี่
+      // ✅ 2. Host ทำการสุ่มตลาดและส่งไปพร้อมคำสั่ง startGame
       const randomIndex = Math.floor(Math.random() * MARKET_SYMBOL_POOL.length);
       const selectedPair = MARKET_SYMBOL_POOL[randomIndex];
 
       console.log(`👑 Host is randomizing market/symbol for room ${state.currentRoom.roomCode}:`, selectedPair);
 
-      const roomRef = doc(firestore, 'rooms', state.currentRoom.roomCode);
-      await updateDoc(roomRef, {
+      const result = await multiplayerService.startGame(state.currentRoom.roomCode, {
         market: selectedPair.market,
         symbol: selectedPair.symbol,
-        'settings.market': selectedPair.market,
-        'settings.symbol': selectedPair.symbol,
       });
-      
-      const result = await multiplayerService.startGame(state.currentRoom.roomCode);
       
       if (result.success) {
         dispatch({ type: MULTIPLAYER_ACTIONS.SET_GAME_STARTED, payload: true });
@@ -574,13 +545,13 @@ export const MultiplayerProvider = ({ children }) => {
   
   const executeTrade = async (tradeData) => {
     try {
-      if (!state.currentRoom || !auth.currentUser) {
+      if (!state.currentRoom || !currentUser) {
         throw new Error('Not in a valid game session');
       }
-      
+
       const result = await multiplayerService.executeTrade(
         state.currentRoom.roomCode,
-        auth.currentUser.uid,
+        currentUser.uid,
         tradeData
       );
       
@@ -597,13 +568,13 @@ export const MultiplayerProvider = ({ children }) => {
 
   const closeTrade = async (tradeId, closePrice) => {
     try {
-      if (!state.currentRoom || !auth.currentUser) {
+      if (!state.currentRoom || !currentUser) {
         throw new Error('Not in a valid game session');
       }
-      
+
       const result = await multiplayerService.closeTrade(
         state.currentRoom.roomCode,
-        auth.currentUser.uid,
+        currentUser.uid,
         tradeId,
         closePrice
       );
@@ -630,55 +601,30 @@ export const MultiplayerProvider = ({ children }) => {
 
     console.log('🏠 Setting up room subscription for:', roomCode);
     return multiplayerService.subscribeToRoom(roomCode, (snapshot) => {
-      // Reduce console logging - only log important changes
-      const isFirebaseSnapshot = snapshot && snapshot.exists;
-      
-      // Handle Firebase snapshot
-      if (isFirebaseSnapshot && snapshot.exists()) {
-        const roomData = snapshot.data();
-        
-        // ✅ 3. เพิ่ม roomCode เข้าไปใน payload เพื่อให้ State สมบูรณ์
-        const payload = { ...roomData, roomCode: snapshot.id };
-        dispatch({ type: MULTIPLAYER_ACTIONS.SET_CURRENT_ROOM, payload });
-        dispatch({ type: MULTIPLAYER_ACTIONS.SET_ROOM_STATUS, payload: roomData.status || 'waiting' });
-        
-        // Check if user is host
-        if (auth.currentUser) {
-          const isHost = roomData.hostId === auth.currentUser.uid;
-          dispatch({ 
-            type: MULTIPLAYER_ACTIONS.SET_IS_HOST, 
-            payload: isHost
-          });
-        }
-        
-        // Update game state
-        if (roomData.status === 'playing' && !state.gameStarted) {
-          dispatch({ type: MULTIPLAYER_ACTIONS.SET_GAME_STARTED, payload: true });
-        }
-        
-        if (roomData.status === 'finished' && !state.gameEnded) {
-          dispatch({ type: MULTIPLAYER_ACTIONS.SET_GAME_ENDED, payload: true });
+      if (!snapshot || typeof snapshot !== 'object') return;
+
+      const roomData = snapshot;
+      const payload = { ...roomData, roomCode: roomData.roomCode || roomCode };
+
+      dispatch({ type: MULTIPLAYER_ACTIONS.SET_CURRENT_ROOM, payload });
+      dispatch({ type: MULTIPLAYER_ACTIONS.SET_ROOM_STATUS, payload: roomData.status || 'waiting' });
+
+      if (currentUser) {
+        dispatch({ type: MULTIPLAYER_ACTIONS.SET_IS_HOST, payload: roomData.hostId === currentUser.uid });
+      }
+
+      if (roomData.status === 'playing' && !gameStateRef.current.gameStarted) {
+        dispatch({ type: MULTIPLAYER_ACTIONS.SET_GAME_STARTED, payload: true });
+      }
+
+      if (roomData.status === 'finished' && !gameStateRef.current.gameEnded) {
+        dispatch({ type: MULTIPLAYER_ACTIONS.SET_GAME_ENDED, payload: true });
+        if (roomData.leaderboard) {
           dispatch({ type: MULTIPLAYER_ACTIONS.SET_LEADERBOARD, payload: roomData.leaderboard });
-        }
-      } 
-      // Handle Socket.IO data
-      else if (snapshot && typeof snapshot === 'object') {
-        // ✅ 3. เพิ่ม roomCode เข้าไปใน payload เพื่อให้ State สมบูรณ์
-        const payload = { ...snapshot, roomCode: snapshot.roomCode || roomCode };
-        dispatch({ type: MULTIPLAYER_ACTIONS.SET_CURRENT_ROOM, payload });
-        dispatch({ type: MULTIPLAYER_ACTIONS.SET_ROOM_STATUS, payload: snapshot.status || 'waiting' });
-        
-        if (auth.currentUser) {
-          const isHost = snapshot.hostId === auth.currentUser.uid;
-          dispatch({ 
-            type: MULTIPLAYER_ACTIONS.SET_IS_HOST, 
-            payload: isHost
-          });
         }
       }
     });
-    // ✅ 4. แก้ไข dependency array - ลบ auth.currentUser เพื่อแก้ ESLint warning
-  }, [state.gameStarted, state.gameEnded]);
+  }, [currentUser, gameStateRef]);
 
   const subscribeToPlayers = useCallback((roomCode) => {
     // ป้องกัน invalid roomCode
@@ -695,8 +641,8 @@ export const MultiplayerProvider = ({ children }) => {
       dispatch({ type: MULTIPLAYER_ACTIONS.SET_PLAYERS, payload: players });
       
       // Update current player data
-      if (auth.currentUser) {
-        const currentPlayer = players.find(p => p.uid === auth.currentUser.uid);
+      if (currentUser) {
+        const currentPlayer = players.find(p => p.uid === currentUser.uid);
         if (currentPlayer) {
           dispatch({ type: MULTIPLAYER_ACTIONS.SET_CURRENT_PLAYER, payload: currentPlayer });
           dispatch({ type: MULTIPLAYER_ACTIONS.SET_BALANCE, payload: currentPlayer.balance });
@@ -705,7 +651,7 @@ export const MultiplayerProvider = ({ children }) => {
         }
       }
     });
-  }, []);
+  }, [currentUser]);
 
   const subscribeToRoomEvents = useCallback((roomCode) => {
     return multiplayerService.subscribeToRoomEvents(roomCode, (snapshot) => {

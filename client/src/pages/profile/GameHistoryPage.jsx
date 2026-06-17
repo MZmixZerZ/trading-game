@@ -1,12 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useUserProfile } from '../../contexts/UserProfileContext';
-import { collection, query, where, orderBy, limit, getDocs, doc, getDoc } from 'firebase/firestore';
-import { firestore } from '../../firebase/firebase';
 import GameHeader from '../../components/common/GameHeader';
-import { 
-  FaHistory, 
-  FaClock, 
+import {
+  FaHistory,
+  FaClock,
   FaGamepad,
   FaBrain,
   FaUsers,
@@ -20,6 +18,8 @@ import {
 } from 'react-icons/fa';
 import { useNavigate } from 'react-router-dom';
 import { getAllEarnedNicknames } from '../../constants/nicknames';
+
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '';
 
 const GameHistoryPage = () => {
   const { currentUser, loading: authLoading } = useAuth();
@@ -43,175 +43,94 @@ const GameHistoryPage = () => {
   // Use local quiz history if available, otherwise use context
   const quizHistory = localQuizHistory || contextQuizHistory;
 
-  // Manual refresh function - separate from loadAllData to avoid circular dependency
   const handleRefresh = useCallback(async () => {
     setHasLoaded(false);
     setLoading(true);
-    
+
     if (!currentUser?.uid) return;
-    
+
     try {
-      // Fetch solo history for display (limited to recent 20)
-      const historyQuery = query(
-        collection(firestore, 'gameHistory'),
-        where('userId', '==', currentUser.uid),
-        where('gameType', '==', 'solo'),
-        orderBy('createdAt', 'desc'),
-        limit(20)
-      );
-      const snapshot = await getDocs(historyQuery);
-      const soloGames = [];
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        soloGames.push({
-          id: doc.id,
+      const res = await fetch(`${API_BASE_URL}/api/game-history/${currentUser.uid}?limit=500`);
+      const { games = [] } = res.ok ? await res.json() : {};
+
+      const soloGames = games
+        .filter(g => g.game_type === 'solo')
+        .slice(0, 20)
+        .map(g => ({
+          id: g.id,
           type: 'solo',
-          date: data.date || data.createdAt?.toDate()?.toISOString() || new Date().toISOString(),
-          result: data.result,
-          score: data.score || 0,
-          profit: data.profit || 0,
-          profitPercentage: data.profitPercentage || 0,
-          finalBalance: data.finalBalance || 0,
-          difficulty: data.difficulty || 'medium',
-          duration: data.timeUsed || 0,
-          totalTrades: data.totalTrades || 0,
-          missions: data.missions || [],
-          completedMissions: data.completedMissions || 0,
-          totalMissions: data.totalMissions || 0,
-          completionRate: data.completionRate || 0,
-          winStreak: data.winStreak || 0,
-          newRecord: data.newRecord || false,
-          market: data.market || data.stockMarket || 'SET',
-          stockSymbol: data.stockSymbol || data.symbol || '',
-          strategy: data.strategy || '',
-          gameMode: data.gameMode || 'normal'
-        });
-      });
+          date: g.created_at,
+          result: g.result,
+          score: g.score || 0,
+          profit: g.profit || 0,
+          profitPercentage: g.profit_percentage || 0,
+          finalBalance: g.final_balance || 0,
+          difficulty: g.difficulty || 'medium',
+          duration: g.duration || 0,
+          totalTrades: g.total_trades || 0,
+          market: g.market || 'SET',
+          stockSymbol: g.symbol || '',
+          gameMode: g.game_mode || 'normal'
+        }));
       setSoloHistory(soloGames);
 
-      // Fetch multiplayer history for display (limited to recent 20)
-      const multiplayerQuery = query(
-        collection(firestore, 'gameHistory'),
-        where('userId', '==', currentUser.uid),
-        where('gameType', '==', 'multiplayer'),
-        orderBy('createdAt', 'desc'),
-        limit(20)
-      );
-      const multiplayerSnapshot = await getDocs(multiplayerQuery);
-      const multiplayerGames = [];
-      multiplayerSnapshot.forEach(doc => {
-        const data = doc.data();
-        multiplayerGames.push({
-          id: doc.id,
+      const multiGames = games
+        .filter(g => g.game_type === 'multiplayer')
+        .slice(0, 20)
+        .map(g => ({
+          id: g.id,
           type: 'multiplayer',
-          date: data.date || data.createdAt?.toDate()?.toISOString() || new Date().toISOString(),
-          result: data.result,
-          score: data.score || 0,
-          profit: data.profit || 0,
-          profitPercentage: data.profitPercentage || 0,
-          finalBalance: data.finalBalance || data.totalValue || 1000000,
-          finalPosition: data.finalPosition || 0,
-          totalPlayers: data.totalPlayers || 0,
-          roomCode: data.roomCode || '',
-          duration: data.duration || 300,
-          market: data.market || 'SET',
-          symbol: data.symbol || data.stockSymbol || 'Unknown',
-          difficulty: data.difficulty || 'medium',
-          gameMode: data.gameMode || 'multiplayer',
-          winnerName: data.winnerName || 'Unknown'
-        });
-      });
-      setMultiplayerHistory(multiplayerGames);
-      
-      // Fetch ALL solo games for accurate statistics (no limit)
-      const allGamesQuery = query(
-        collection(firestore, 'gameHistory'),
-        where('userId', '==', currentUser.uid),
-        where('gameType', '==', 'solo')
-      );
-      const allGamesSnapshot = await getDocs(allGamesQuery);
-      let totalGames = 0;
-      let totalWinCount = 0;
-      
-      allGamesSnapshot.forEach(doc => {
-        const data = doc.data();
-        totalGames++;
-        // Count wins based on result or profit
-        if (data.result === 'win' || (data.profit && data.profit > 0)) {
-          totalWinCount++;
-        }
-      });
-      
-      setTotalSoloGames(totalGames);
-      setTotalWins(totalWinCount);
+          date: g.created_at,
+          result: g.result,
+          score: g.score || 0,
+          profit: g.profit || 0,
+          profitPercentage: g.profit_percentage || 0,
+          finalBalance: g.final_balance || 1000000,
+          finalPosition: g.data?.finalPosition || 0,
+          totalPlayers: g.data?.totalPlayers || 0,
+          roomCode: g.room_code || '',
+          duration: g.duration || 300,
+          market: g.market || 'SET',
+          symbol: g.symbol || 'Unknown',
+          difficulty: g.difficulty || 'medium',
+          gameMode: g.game_mode || 'multiplayer',
+          winnerName: g.data?.winnerName || 'Unknown'
+        }));
+      setMultiplayerHistory(multiGames);
 
-      // Fetch ALL multiplayer games for accurate statistics (no limit)
-      const allMultiplayerGamesQuery = query(
-        collection(firestore, 'gameHistory'),
-        where('userId', '==', currentUser.uid),
-        where('gameType', '==', 'multiplayer')
-      );
-      const allMultiplayerSnapshot = await getDocs(allMultiplayerGamesQuery);
-      let totalMultiplayerCount = 0;
+      const allSolo = games.filter(g => g.game_type === 'solo');
+      setTotalSoloGames(allSolo.length);
+      setTotalWins(allSolo.filter(g => g.result === 'win' || g.profit > 0).length);
+
+      const allMulti = games.filter(g => g.game_type === 'multiplayer');
+      setTotalMultiplayerGames(allMulti.length);
       let bestPosition = 0;
-      
-      allMultiplayerSnapshot.forEach(doc => {
-        const data = doc.data();
-        totalMultiplayerCount++;
-        const position = data.finalPosition || 0;
-        if (bestPosition === 0 || (position > 0 && position < bestPosition)) {
-          bestPosition = position;
-        }
+      allMulti.forEach(g => {
+        const pos = g.data?.finalPosition || 0;
+        if (bestPosition === 0 || (pos > 0 && pos < bestPosition)) bestPosition = pos;
       });
-      
-      setTotalMultiplayerGames(totalMultiplayerCount);
       setBestMultiplayerPosition(bestPosition);
-      
-      // Fetch quiz history if available
-      if (fetchQuizHistory) {
-        try {
-          await fetchQuizHistory(currentUser.uid);
-        } catch (error) {
-          console.error('❌ Error fetching quiz history:', error);
-        }
-      }
-      
-      // Debug: Log quiz history state
-      // Fetch user profile for nicknames
-      if (fetchProfile) {
-        try {
-          await fetchProfile(currentUser.uid);
-        } catch (error) {
-          console.error('❌ Error fetching profile:', error);
-        }
-      }
-      
-      // Fetch user nicknames from Firestore
+
+      // Load profile for nicknames and quiz data
       try {
-        const userRef = doc(firestore, 'users', currentUser.uid);
-        const userSnap = await getDoc(userRef);
-        if (userSnap.exists()) {
-          const userData = userSnap.data();
-          const completedLevels = userData.soloCompletedLevels || [];
-          const earnedNicknames = getAllEarnedNicknames(completedLevels);
-          setUserNicknames(earnedNicknames);
-          
-          // If quiz data exists in Firestore but not in context, use Firestore data
-          if (!quizHistory && (userData.quizHistory || userData.assessmentQuiz || userData.levelAssessment)) {
-            const firestoreQuizData = {
-              bestScore: userData.quizHistory?.bestScore || userData.assessmentQuiz?.score || 0,
-              userLevel: userData.userLevel || userData.assessmentQuiz?.level || 'easy',
-              totalQuizzes: userData.quizHistory?.totalQuizzes || (userData.assessmentQuiz ? 1 : 0),
-              levelAssessmentDone: userData.completedAssessment || userData.levelAssessment?.completed || false,
-              averageScore: userData.quizHistory?.averageScore || userData.assessmentQuiz?.score || 0
-            };
-            setLocalQuizHistory(firestoreQuizData);
-          }
+        const profileRes = await fetch(`${API_BASE_URL}/api/profile/${currentUser.uid}`);
+        const profile = profileRes.ok ? await profileRes.json() : {};
+        const completedLevels = profile.soloCompletedLevels || [];
+        setUserNicknames(getAllEarnedNicknames(completedLevels));
+        if (!quizHistory && profile.quizHistory) {
+          setLocalQuizHistory(profile.quizHistory);
         }
-      } catch (error) {
-        console.error('❌ Error fetching user nicknames:', error);
+      } catch (e) {
+        console.warn('⚠️ Could not load profile for nicknames:', e.message);
       }
-      
+
+      if (fetchQuizHistory) {
+        try { await fetchQuizHistory(currentUser.uid); } catch (e) {}
+      }
+      if (fetchProfile) {
+        try { await fetchProfile(currentUser.uid); } catch (e) {}
+      }
+
       setHasLoaded(true);
     } catch (error) {
       console.error('❌ Error loading game history:', error);

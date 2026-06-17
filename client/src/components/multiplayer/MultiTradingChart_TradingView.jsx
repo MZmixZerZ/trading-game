@@ -132,6 +132,18 @@ const MultiTradingChart_TradingView = forwardRef(({
   // Priority: if external pause is provided (like game ended), use it
   // Otherwise, use internal state for player control
   const isPaused = isChartPaused !== null && isChartPaused !== undefined ? isChartPaused : internalPausedState
+
+  // When external override goes from forced-resume (false) back to self-managed (null),
+  // reset internalPausedState to false so the chart doesn't snap back to paused
+  const prevIsChartPausedRef = useRef(isChartPaused)
+  useEffect(() => {
+    const prev = prevIsChartPausedRef.current
+    prevIsChartPausedRef.current = isChartPaused
+    if (prev === false && (isChartPaused === null || isChartPaused === undefined)) {
+      setInternalPausedState(false)
+      localStorage.setItem(`${playerStateKey}_paused`, JSON.stringify(false))
+    }
+  }, [isChartPaused, playerStateKey])
   
   // Initialize debug logging - moved after state definitions
   useEffect(() => {
@@ -1259,13 +1271,21 @@ const MultiTradingChart_TradingView = forwardRef(({
   useEffect(() => {
     if (!chartRef.current || !chartData.length) return
 
-    // Count active indicators to calculate proper layer spacing (including volume as indicator)
-    const activeIndicators = Object.entries(analysisToolsRef.current).filter(([toolName, tool]) => 
-      tool.enabled
-    );
-    
-    // Calculate layer heights - no special handling for volume
-    const mainChartHeight = 0.6; // 60% for main chart
+    const activeIndicators = Object.entries(analysisToolsRef.current).filter(([toolName, tool]) => tool.enabled);
+    const nonVolumeActive = activeIndicators.filter(([name]) => name !== 'volume');
+    const numNonVolume = Math.max(1, nonVolumeActive.length);
+    const indicatorHeight = 0.25 / numNonVolume; // distribute 0.60–0.85 equally
+
+    // Adjust main chart bottom margin to leave room for indicators
+    const hasAnyIndicator = activeIndicators.length > 0;
+    const mainBottomMargin = hasAnyIndicator ? 0.40 : 0.05;
+    try {
+      chartRef.current.priceScale('right').applyOptions({
+        scaleMargins: { top: 0.05, bottom: mainBottomMargin },
+      });
+    } catch (e) { /* ignore */ }
+
+    const mainChartHeight = 0.6; // indicators start at 60%
 
     Object.entries(analysisToolsRef.current).forEach(([toolName, tool]) => {
       try {
@@ -1305,10 +1325,9 @@ const MultiTradingChart_TradingView = forwardRef(({
             layerBottom = 0.98; // Go almost to the bottom
           } else {
             // Other indicators use normal spacing but adjusted for volume space
-            const adjustedIndicatorHeight = 0.25 / Math.max(1, activeIndicators.length - 1); // Reserve 25% for non-volume indicators
-            const nonVolumeIndex = activeIndicators.filter(([name]) => name !== 'volume').findIndex(([name]) => name === toolName);
-            layerTop = mainChartHeight + (nonVolumeIndex * adjustedIndicatorHeight);
-            layerBottom = Math.min(0.84, layerTop + adjustedIndicatorHeight - 0.02); // Stop before volume layer
+            const nonVolumeIndex = nonVolumeActive.findIndex(([name]) => name === toolName);
+            layerTop = mainChartHeight + (nonVolumeIndex * indicatorHeight);
+            layerBottom = Math.min(0.84, layerTop + indicatorHeight - 0.01);
           }
           
           switch (toolName) {
@@ -1825,38 +1844,34 @@ const MultiTradingChart_TradingView = forwardRef(({
     
     debugLog(`🎮 Play/Pause button clicked! currentPaused=${isPaused}`)
     
+    const newPausedValue = !isPaused
     setIsPaused(prev => {
       const newValue = !prev
       debugLog(`🎮 Toggling pause state: from=${prev} to=${newValue}`)
-      
+
       // Save to localStorage only if using internal state
       if (isChartPaused === null || isChartPaused === undefined) {
         localStorage.setItem(`${playerStateKey}_paused`, JSON.stringify(newValue))
         debugLog(`💾 Saved pause state to localStorage: ${newValue}`)
       }
-      
-      // Clear debug message and provide user feedback
+
       debugLog(`🎮 Player ${playerId} ${newValue ? 'paused' : 'resumed'} chart updates`)
-      
-      // Show user-friendly notification
+
       if (newValue) {
-        // Chart is paused - show pause notification
         debugLog('⏸️ Chart PAUSED - Game timer continues running')
-        setTimeout(() => {
-          debugLog('⏸️ Chart paused - Game timer continues running')
-        }, 100)
       } else {
-        // Chart is resumed
         debugLog('▶️ Chart RESUMED - Now showing live updates')
-        setTimeout(() => {
-          debugLog('▶️ Chart resumed - Now showing live updates')
-        }, 100)
       }
-      
+
       return newValue
     })
+
+    // Notify parent when in self-managed mode (external override handles its own callback via setIsPaused)
+    if (onChartPauseChange && (isChartPaused === null || isChartPaused === undefined)) {
+      onChartPauseChange(newPausedValue)
+    }
     // NOTE: This only pauses chart data updates, the game timer continues running normally
-  }, [playerStateKey, playerId, isChartPaused, setIsPaused, debugLog, isPaused])
+  }, [playerStateKey, playerId, isChartPaused, setIsPaused, debugLog, isPaused, onChartPauseChange])
 
   // Add keyboard shortcut for play/pause (Spacebar)
   useEffect(() => {

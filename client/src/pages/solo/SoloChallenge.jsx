@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { auth, firestore } from '../../firebase/firebase';
-import { doc, getDoc, updateDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '../../contexts/AuthContext';
 // import Balance from '../components/Balance';
 // import LimitOrderPanel from '../components/LimitOrderPanel'; // Removed unused import
 import SoloTradingChart from '../../components/solo/SoloTradingChart';
@@ -37,9 +35,12 @@ const formatPrice = (num) => {
   return num.toFixed(2);
 };
 
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '';
+
 function SoloChallenge() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { currentUser: authUser } = useAuth();
 
   // Helper: normalize difficulty to string id (e.g., 'easy')
   const extractDifficultyId = useCallback((d) => {
@@ -302,9 +303,10 @@ function SoloChallenge() {
     return levelOrder; // ทุกระดับพร้อมเล่น
   }, []);
 
-  // Load user progress from Firebase (guard overlays when resuming)
+  // Load user progress via API
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    const loadProgress = async () => {
+      const user = authUser;
       if (!user) return;
       try {
         if (persistedActive || passedDifficulty) {
@@ -323,28 +325,19 @@ function SoloChallenge() {
           }
         }
 
-        const userRef = doc(firestore, 'users', user.uid);
-        const userDoc = await getDoc(userRef);
+        console.log('📖 Loading user progress via API...');
+        const res = await fetch(`${API_BASE_URL}/api/profile/${user.uid}`);
+        const userData = res.ok ? await res.json() : null;
 
-        console.log('📖 Loading user progress from Firebase...');
-
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
-          
+        if (userData && (userData.soloCompletedLevels || userData.soloUnlockedLevels)) {
           const earnedNicknames = userData.soloEarnedNicknames || [];
           const currentNickname = getHighestNickname(userData.soloCompletedLevels || []);
-          
-          // Fix unlocked levels based on completed levels - Enhanced permanent unlock system
           const completedLevels = userData.soloCompletedLevels || [];
           const fixedUnlockedLevels = fixUnlockedLevels(userData.soloUnlockedLevels, completedLevels);
 
-          console.log('� User progress loaded - Permanent unlocked:', fixedUnlockedLevels);
-          
-          console.log('🔑 Final permanent unlocked levels:', fixedUnlockedLevels);
-
           const progress = {
             currentLevel: userData.soloCurrentLevel || 'easy',
-            completedLevels: userData.soloCompletedLevels || [],
+            completedLevels,
             totalChallenges: userData.soloTotalChallenges || 0,
             winRate: userData.soloWinRate || 0,
             unlockedLevels: fixedUnlockedLevels,
@@ -352,32 +345,23 @@ function SoloChallenge() {
             currentNickname,
             recommendedStartLevel: userData.recommendedStartLevel || 'easy',
           };
-          
-          // Update Firebase if unlocked levels were fixed (force update for permanent unlock)
+
+          // Sync fixed unlocked levels back if changed
           const originalUnlockedLevels = userData.soloUnlockedLevels || ['easy'];
-          const hasChanges = fixedUnlockedLevels.length !== originalUnlockedLevels.length || 
+          const hasChanges = fixedUnlockedLevels.length !== originalUnlockedLevels.length ||
                             !fixedUnlockedLevels.every(level => originalUnlockedLevels.includes(level));
-          
-          console.log('💾 Firebase comparison:', {
-            original: originalUnlockedLevels,
-            fixed: fixedUnlockedLevels,
-            hasChanges
-          });
-          
           if (hasChanges) {
-            console.log('💾 Updating Firebase with permanent unlocked levels:', fixedUnlockedLevels);
-            await updateDoc(userRef, {
-              soloUnlockedLevels: fixedUnlockedLevels
-            });
-            console.log('✅ Firebase updated with permanent unlock status');
-          } else {
-            console.log('💾 No changes needed, Firebase is up to date');
+            fetch(`${API_BASE_URL}/api/profile/${user.uid}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ soloUnlockedLevels: fixedUnlockedLevels })
+            }).catch(() => {});
           }
 
           setUserProgress(progress);
           setDifficulty(progress.currentLevel);
 
-          const hasUnlockedLevels = userData.soloUnlockedLevels && userData.soloUnlockedLevels.length > 1;
+          const hasUnlockedLevels = fixedUnlockedLevels.length > 1;
           const hasTutorialData = userData.tutorialCompleted || hasUnlockedLevels;
 
           // Simplified state logic
@@ -423,10 +407,9 @@ function SoloChallenge() {
       } catch (error) {
         console.error('Error loading user progress:', error);
       }
-    });
-
-    return () => unsubscribe();
-  }, [passedDifficulty, persistedActive, rawStateDifficulty, rawUrlDifficulty, fixUnlockedLevels]);
+    };
+    loadProgress();
+  }, [authUser, passedDifficulty, persistedActive, rawStateDifficulty, rawUrlDifficulty, fixUnlockedLevels]);
 
   // Debug: Track difficulty state changes
   useEffect(() => {
@@ -531,7 +514,7 @@ function SoloChallenge() {
 
   // Function to save progress after challenge completion
   const saveProgressAfterChallenge = useCallback(async (won, victoryData = null) => {
-    const user = auth.currentUser;
+    const user = authUser;
     if (!user) {
       console.error('❌ No authenticated user found for saving progress');
       return;
@@ -541,13 +524,12 @@ function SoloChallenge() {
 
     try {
       // Calculate game session score based on victory conditions or use default
-      const sessionScore = victoryData ? 
-        Math.round(victoryData.scoreRate * 1000) : 
-        (won ? 500 : 100); // Fallback scoring: 500 for win, 100 for loss
-      // Get current user data first
-      const userRef = doc(firestore, 'users', user.uid);
-      const userDoc = await getDoc(userRef);
-      const currentUserData = userDoc.exists() ? userDoc.data() : {};
+      const sessionScore = victoryData ?
+        Math.round(victoryData.scoreRate * 1000) :
+        (won ? 500 : 100);
+      // Fetch current user data via API
+      const profileRes = await fetch(`${API_BASE_URL}/api/profile/${user.uid}`);
+      const currentUserData = profileRes.ok ? await profileRes.json() : {};
       const newTotalChallenges = userProgress.totalChallenges + 1;
       const wins = Math.round((userProgress.winRate / 100) * userProgress.totalChallenges) + (won ? 1 : 0);
       const newWinRate = (wins / newTotalChallenges) * 100;
@@ -632,59 +614,41 @@ function SoloChallenge() {
         unlockedLevels: newUnlockedLevels
       };
 
-      // Update Firebase with all necessary fields
+      // Save progress via API
       const updateData = {
-        // Solo Challenge specific fields
         soloCurrentLevel: newCurrentLevel || 'easy',
         soloCompletedLevels: newCompletedLevels || [],
         soloTotalChallenges: newTotalChallenges || 0,
         soloWinRate: newWinRate || 0,
         soloUnlockedLevels: newUnlockedLevels || ['easy'],
         soloEarnedNicknames: newEarnedNicknames || [],
-        
-        // Overall statistics
         totalScore: newTotalScore || 0,
         gamesPlayed: newTotalGames || 0,
         gamesWon: newTotalWins || 0,
-        
-        // Update last played timestamp
-        lastPlayedSolo: new Date(),
-        lastUpdated: new Date()
+        lastPlayedSolo: new Date().toISOString(),
+        lastUpdated: new Date().toISOString()
       };
-      
-      console.log('💾 Saving to Firebase...');
-      console.log('💾 Data to save:', {
-        completedLevels: newCompletedLevels,
-        unlockedLevels: newUnlockedLevels,
-        currentLevel: newCurrentLevel
+
+      await fetch(`${API_BASE_URL}/api/profile/${user.uid}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updateData)
       });
-      
-      await updateDoc(userRef, updateData);
       console.log('✅ Progress saved successfully!');
-      
+
       setUserProgress(updatedProgress);
-      
-      // Force refresh ข้อมูลจาก Firebase เพื่อให้แน่ใจว่าได้ข้อมูลล่าสุด
+
+      // Refresh from API
       setTimeout(async () => {
         try {
-          console.log('🔄 Refreshing data from Firebase...');
-          const freshUserDoc = await getDoc(userRef);
-          if (freshUserDoc.exists()) {
-            const freshData = freshUserDoc.data();
-            
-            console.log('🔄 Fresh data from Firebase:', {
-              completedLevels: freshData.soloCompletedLevels,
-              unlockedLevels: freshData.soloUnlockedLevels
-            });
-            
-            // อัปเดต userProgress ด้วยข้อมูลล่าสุด
+          const freshRes = await fetch(`${API_BASE_URL}/api/profile/${user.uid}`);
+          if (freshRes.ok) {
+            const freshData = await freshRes.json();
             const refreshedProgress = {
               ...updatedProgress,
               unlockedLevels: freshData.soloUnlockedLevels || ['easy'],
               completedLevels: freshData.soloCompletedLevels || []
             };
-            
-            console.log('🔄 Setting refreshed progress:', refreshedProgress);
             setUserProgress(refreshedProgress);
             
             // Force re-render component ที่ใช้ userProgress
@@ -715,22 +679,20 @@ function SoloChallenge() {
         window.showToast('เกิดข้อผิดพลาดในการบันทึกคะแนน', 'error');
       }
     }
-  }, [userProgress, difficulty, difficultyLevels, canUnlockNextLevel]);
+  }, [authUser, userProgress, difficulty, difficultyLevels, canUnlockNextLevel]);
 
   // Function to save individual game history record
   const saveGameHistory = useCallback(async (gameData) => {
-    const user = auth.currentUser;
+    const user = authUser;
     if (!user) {
       console.error('❌ No authenticated user found for saving game history');
       return;
     }
 
     try {
-      // Create game history record with safe data validation
-      const gameHistoryData = {
-        gameSessionId: gameSessionId, // เพิ่ม session ID เพื่อแยกรอบการเล่น
-        gameStartTime: gameStartTime, // เพิ่มเวลาเริ่มเกม
+      const payload = {
         userId: user.uid,
+        playerName: user.displayName || 'Player',
         gameType: 'solo',
         result: gameData.won ? 'win' : 'lose',
         score: Number(gameData.totalReturn) || 0,
@@ -739,28 +701,34 @@ function SoloChallenge() {
         finalBalance: Number(gameData.finalBalance) || 10000,
         difficulty: gameData.difficulty || difficulty || 'medium',
         market: selectedMarket || getMarketByDifficulty(difficulty)?.market || 'SET',
-        stockSymbol: selectedSymbol || '',
-        timeUsed: Number(gameData.timeUsed) || 0,
-        timeRemaining: Number(remainingTime) || 0,
+        symbol: selectedSymbol || '',
+        duration: Number(gameData.timeUsed) || 0,
         totalTrades: Number(gameData.trades) || (tradeHistory ? tradeHistory.length : 0),
-        tradeHistory: (tradeHistory || []).map(trade => ({
-          type: String(trade.type || ''),
-          amount: Number(trade.amount) || 0,
-          price: Number(trade.price) || 0,
-          profit: Number(trade.profit) || 0,
-          timestamp: trade.timestamp ? new Date(trade.timestamp).toISOString() : new Date().toISOString()
-        })),
-        missions: Array.isArray(gameData.missions) ? gameData.missions : [],
-        completedMissions: Number(gameData.completedMissions) || 0,
-        totalMissions: Number(gameData.totalMissions) || 0,
-        completionRate: Number(gameData.completionRate) || 0,
-        winStreak: Number(gameData.winStreak) || 0,
-        newRecord: Boolean(gameData.newRecord),
-        createdAt: serverTimestamp(),
-        date: new Date().toISOString()
+        gameMode: 'solo',
+        data: {
+          gameSessionId,
+          gameStartTime,
+          timeRemaining: Number(remainingTime) || 0,
+          tradeHistory: (tradeHistory || []).map(trade => ({
+            type: String(trade.type || ''),
+            amount: Number(trade.amount) || 0,
+            price: Number(trade.price) || 0,
+            profit: Number(trade.profit) || 0,
+            timestamp: trade.timestamp ? new Date(trade.timestamp).toISOString() : new Date().toISOString()
+          })),
+          missions: Array.isArray(gameData.missions) ? gameData.missions : [],
+          completedMissions: Number(gameData.completedMissions) || 0,
+          totalMissions: Number(gameData.totalMissions) || 0,
+          completionRate: Number(gameData.completionRate) || 0,
+          winStreak: Number(gameData.winStreak) || 0,
+          newRecord: Boolean(gameData.newRecord),
+        }
       };
-      // Save to game history collection
-      await addDoc(collection(firestore, 'gameHistory'), gameHistoryData);
+      await fetch(`${API_BASE_URL}/api/game-history`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
       
       // ตรวจสอบ achievements ใหม่หลังจบเกม solo
       try {
@@ -781,7 +749,7 @@ function SoloChallenge() {
         stack: error.stack
       });
     }
-  }, [remainingTime, tradeHistory, difficulty, selectedMarket, selectedSymbol, getMarketByDifficulty, gameSessionId, gameStartTime]);
+  }, [authUser, remainingTime, tradeHistory, difficulty, selectedMarket, selectedSymbol, getMarketByDifficulty, gameSessionId, gameStartTime]);
 
   // Handle tutorial completion
   const handleTutorialComplete = (unlockedLevels, recommendedStartLevel) => {
@@ -802,53 +770,45 @@ function SoloChallenge() {
     setShowTutorial(false);
     setShowDifficultySelector(true);
     
-    // Save to Firebase
-    const user = auth.currentUser;
-    if (user) {
-      const userRef = doc(firestore, 'users', user.uid);
-      updateDoc(userRef, {
-        soloUnlockedLevels: unlockedLevels,
-        tutorialCompleted: true, // บันทึกว่าทำ Tutorial เสร็จแล้ว
-        soloCompletedLevels: ['tutorial'],
-        soloEarnedNicknames: newEarnedNicknames,
-        recommendedStartLevel: recommendedStartLevel // บันทึกระดับที่แนะนำ
-      });
+    // Save via API
+    if (authUser) {
+      fetch(`${API_BASE_URL}/api/profile/${authUser.uid}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          soloUnlockedLevels: unlockedLevels,
+          tutorialCompleted: true,
+          soloCompletedLevels: ['tutorial'],
+          soloEarnedNicknames: newEarnedNicknames,
+          recommendedStartLevel: recommendedStartLevel
+        })
+      }).catch(() => {});
     }
   };
 
-  // Function to refresh user data from Firebase
+  // Function to refresh user data via API
   const handleRefreshUserData = useCallback(async () => {
-    const user = auth.currentUser;
+    const user = authUser;
     if (!user) return;
 
     try {
-      const userRef = doc(firestore, 'users', user.uid);
-      const userDoc = await getDoc(userRef);
-
-      if (userDoc.exists()) {
-        const userData = userDoc.data();
-        
+      const res = await fetch(`${API_BASE_URL}/api/profile/${user.uid}`);
+      if (res.ok) {
+        const userData = await res.json();
         const earnedNicknames = userData.soloEarnedNicknames || [];
         const currentNickname = getHighestNickname(userData.soloCompletedLevels || []);
-        
-        // Fix unlocked levels based on completed levels - Enhanced permanent unlock system
         const completedLevels = userData.soloCompletedLevels || [];
         const fixedUnlockedLevels = fixUnlockedLevels(userData.soloUnlockedLevels, completedLevels);
-
-        const refreshedProgress = {
+        setUserProgress({
           currentLevel: userData.soloCurrentLevel || 'easy',
-          completedLevels: userData.soloCompletedLevels || [],
+          completedLevels,
           totalChallenges: userData.soloTotalChallenges || 0,
           winRate: userData.soloWinRate || 0,
           unlockedLevels: fixedUnlockedLevels,
           earnedNicknames,
           currentNickname,
           recommendedStartLevel: userData.recommendedStartLevel || 'easy',
-        };
-        
-        setUserProgress(refreshedProgress);
-        
-        // แสดงข้อความแจ้งเตือน
+        });
         if (typeof window !== 'undefined' && window.showToast) {
           window.showToast('🔄 รีเฟรชข้อมูลเรียบร้อย', 'success');
         }
@@ -859,7 +819,7 @@ function SoloChallenge() {
         window.showToast('❌ เกิดข้อผิดพลาดในการรีเฟรชข้อมูล', 'error');
       }
     }
-  }, [fixUnlockedLevels]);
+  }, [authUser, fixUnlockedLevels]);
 
   // Simple and clear trading hints as list
   const generateHint = useCallback(() => {
@@ -1640,33 +1600,24 @@ function SoloChallenge() {
     
     // Force refresh user data before going back to selector
     try {
-      const user = auth.currentUser;
-      if (user) {
-        const userRef = doc(firestore, 'users', user.uid);
-        const userDoc = await getDoc(userRef);
-        
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
-          
+      if (authUser) {
+        const res = await fetch(`${API_BASE_URL}/api/profile/${authUser.uid}`);
+        if (res.ok) {
+          const userData = await res.json();
           const earnedNicknames = userData.soloEarnedNicknames || [];
           const currentNickname = getHighestNickname(userData.soloCompletedLevels || []);
-          
-          // Fix unlocked levels based on completed levels - Enhanced permanent unlock system
           const completedLevels = userData.soloCompletedLevels || [];
           const fixedUnlockedLevels = fixUnlockedLevels(userData.soloUnlockedLevels, completedLevels);
-
-          const refreshedProgress = {
+          setUserProgress({
             currentLevel: userData.soloCurrentLevel || 'easy',
-            completedLevels: userData.soloCompletedLevels || [],
+            completedLevels,
             totalChallenges: userData.soloTotalChallenges || 0,
             winRate: userData.soloWinRate || 0,
             unlockedLevels: fixedUnlockedLevels,
             earnedNicknames,
             currentNickname,
             recommendedStartLevel: userData.recommendedStartLevel || 'easy',
-          };
-          
-          setUserProgress(refreshedProgress);
+          });
         }
       }
     } catch (error) {
@@ -1687,7 +1638,7 @@ function SoloChallenge() {
     // Navigate back to challenge selection page
     console.log('🏠 Navigating back to challenge selection...');
     navigate('/challenge');
-  }, [fixUnlockedLevels, navigate]);
+  }, [authUser, fixUnlockedLevels, navigate]);
   
   const handleLevelSelect = useCallback(async (levelId) => {
     console.log(`🎯 [LEVEL SELECT] handleLevelSelect called with levelId: ${levelId}`);

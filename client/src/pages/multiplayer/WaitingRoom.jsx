@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { auth } from "../../firebase/firebase";
+import { useAuth } from "../../contexts/AuthContext";
 import { FaPlay, FaUserCircle, FaLink, FaClock, FaUsers, FaSignOutAlt } from "react-icons/fa";
 import challenge1 from "../../assets/challenge1.webp";
 import challenge2 from "../../assets/challenge2.webp";
@@ -12,6 +12,7 @@ import { useConnectionStatus } from "../../hooks/useConnectionStatus";
 export default function WaitingRoomPage() {
   const { roomCode } = useParams();
   const navigate = useNavigate();
+  const { currentUser } = useAuth();
   const { isOnline, isConnected, reconnecting } = useConnectionStatus();
   
   const {
@@ -60,20 +61,11 @@ export default function WaitingRoomPage() {
     const initializeRoom = async () => {
       if (!roomCode) return;
       
-      if (!auth.currentUser) {
-        // Wait for auth to be ready (only once)
-        authUnsub = auth.onAuthStateChanged(async (user) => {
-          if (user) {
-            authUnsub(); // cleanup auth listener
-            await setupSubscriptions();
-          } else {
-            navigate('/login');
-          }
-        });
+      if (!currentUser) {
+        navigate('/login');
         return;
-      } else {
-        await setupSubscriptions();
       }
+      await setupSubscriptions();
     };
 
     const setupSubscriptions = async () => {
@@ -187,55 +179,32 @@ export default function WaitingRoomPage() {
 
   const handleCountdownComplete = useCallback(async () => {
     setShowCountdown(false);
-    
-    console.log("🎯 Countdown completed! Attempting to start game...");
-    console.log("🎯 Current state:", { 
-      isHost, 
-      roomStatus, 
-      currentRoom: currentRoom?.roomCode,
-      playersCount: players.length,
-      loading
-    });
-    
-    // ถ้าเกมเริ่มแล้วหรือกำลังโหลดอยู่ ให้ข้ามการเริ่มเกม
+
+    // Non-host: navigate via the roomStatus==='playing' effect when host starts game
+    if (!isHost) {
+      console.log("🎮 Non-host: waiting for game-started event to navigate");
+      return;
+    }
+
     if (roomStatus === 'playing') {
-      console.log("🎮 Game already playing, navigating to game page");
-  navigate(`/game/${roomCode}`);
+      navigate(`/game/${roomCode}`);
       return;
     }
-    
-    if (loading) {
-      console.log("🎮 Already loading, skipping start game");
-      return;
-    }
-    
+
+    if (loading) return;
+
     try {
-      console.log("🎮 Calling startGame...");
       const result = await startGame();
-      console.log("✅ Game started successfully after countdown:", result);
-      
-      // Navigate to game page after successful start
       if (result.success) {
-        setTimeout(() => {
-          navigate(`/game/${roomCode}`);
-        }, 1000);
+        setTimeout(() => navigate(`/game/${roomCode}`), 1000);
       }
-      
     } catch (err) {
       console.error("❌ Failed to start game after countdown:", err);
-      console.error("❌ Error details:", err.message, err.stack);
-      
-      // หาก error เป็น "Game already started" ให้ไปหน้าเกมเลย
-      if (err.message && err.message.includes('Game already started')) {
-        console.log("🎮 Game already started, navigating to game page");
-  navigate(`/game/${roomCode}`);
-        return;
+      if (err.message?.includes('Game already started') || err.message?.includes('already running')) {
+        navigate(`/game/${roomCode}`);
       }
-      
-      // Show error to user
-      alert(`เกิดข้อผิดพลาดในการเริ่มเกม: ${err.message}`);
     }
-  }, [setShowCountdown, isHost, roomStatus, currentRoom, players.length, loading, startGame, navigate, roomCode]); // Dependencies for useCallback
+  }, [setShowCountdown, isHost, roomStatus, loading, startGame, navigate, roomCode]); // Dependencies for useCallback
 
   const handleLeaveRoom = async () => {
     try {
@@ -305,7 +274,7 @@ export default function WaitingRoomPage() {
           <div className="flex items-center justify-center gap-2 text-yellow-300 text-sm">
             <div className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse"></div>
             {!isOnline ? 'ไม่มีการเชื่อมต่ออินเทอร์เน็ต' : 
-             !isConnected ? 'การเชื่อมต่อ Firebase ขาดหาย' :
+             !isConnected ? 'การเชื่อมต่อเซิร์ฟเวอร์ขาดหาย' :
              'กำลังเชื่อมต่อใหม่...'}
           </div>
         </div>

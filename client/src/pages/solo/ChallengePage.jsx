@@ -1,8 +1,6 @@
 import React, { useState, useMemo, useCallback, memo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { auth, firestore } from '../../firebase/firebase';
-import { doc, getDoc } from 'firebase/firestore';
-import { onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '../../contexts/AuthContext';
 import GameHeader from "../../components/common/GameHeader";
 import SoloDifficultySelector from "../../components/solo/SoloDifficultySelector";
 import RoomSetting from "../../components/multiplayer/RoomSetting";
@@ -249,8 +247,11 @@ const GameModeCard = memo(({ gameMode, index, selectedMode, onModeSelect, onEnte
   );
 });
 
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '';
+
 export default function ChallengePage() {
   const navigate = useNavigate();
+  const { currentUser } = useAuth();
 
   // States
   const [mode, setMode] = useState(null);
@@ -308,60 +309,37 @@ export default function ChallengePage() {
     return fixedUnlockedLevels;
   }, []);
 
-  // Load user progress from Firebase
+  // Load user progress via API
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        try {
-          console.log('🔄 Loading user progress for Challenge Page...');
-          const userRef = doc(firestore, 'users', user.uid);
-          const userDoc = await getDoc(userRef);
-          
-          if (userDoc.exists()) {
-            const userData = userDoc.data();
-            console.log('📊 User data loaded:', {
-              unlockedLevels: userData.soloUnlockedLevels,
-              completedLevels: userData.soloCompletedLevels
-            });
-            
-            // Fix unlocked levels based on completed levels
-            const completedLevels = userData.soloCompletedLevels || [];
-            const fixedUnlockedLevels = fixUnlockedLevels(userData.soloUnlockedLevels, completedLevels);
-            
-            console.log('🔑 Final unlocked levels for Challenge Page:', fixedUnlockedLevels);
-            
-            setUserProgress({
-              unlockedLevels: fixedUnlockedLevels,
-              completedLevels: userData.soloCompletedLevels || [],
-              totalChallenges: userData.soloTotalChallenges || 0,
-              winRate: userData.soloWinRate || 0
-            });
-          } else {
-            console.log('👤 New user - using default progress');
-            setUserProgress({
-              unlockedLevels: ['easy'],
-              completedLevels: [],
-              totalChallenges: 0,
-              winRate: 0
-            });
-          }
-        } catch (error) {
-          console.error('❌ Error loading user progress:', error);
+    const loadProgress = async () => {
+      if (!currentUser) {
+        setUserProgress({ unlockedLevels: ['easy'], completedLevels: [], totalChallenges: 0, winRate: 0 });
+        setIsLoading(false);
+        return;
+      }
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/profile/${currentUser.uid}`);
+        if (res.ok) {
+          const userData = await res.json();
+          const completedLevels = userData.soloCompletedLevels || [];
+          const fixedUnlockedLevels = fixUnlockedLevels(userData.soloUnlockedLevels, completedLevels);
+          setUserProgress({
+            unlockedLevels: fixedUnlockedLevels,
+            completedLevels,
+            totalChallenges: userData.soloTotalChallenges || 0,
+            winRate: userData.soloWinRate || 0
+          });
+        } else {
+          setUserProgress({ unlockedLevels: ['easy'], completedLevels: [], totalChallenges: 0, winRate: 0 });
         }
-      } else {
-        console.log('🔒 No authenticated user - using default progress');
-        setUserProgress({
-          unlockedLevels: ['easy'],
-          completedLevels: [],
-          totalChallenges: 0,
-          winRate: 0
-        });
+      } catch (err) {
+        console.error('❌ Error loading user progress:', err);
+        setUserProgress({ unlockedLevels: ['easy'], completedLevels: [], totalChallenges: 0, winRate: 0 });
       }
       setIsLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, [fixUnlockedLevels]);
+    };
+    loadProgress();
+  }, [currentUser, fixUnlockedLevels]);
 
   // Memoized handlers
   const handleModeSelect = useCallback((modeKey) => {
@@ -387,29 +365,17 @@ export default function ChallengePage() {
     setShowDifficultySelector(false);
     setSelectedMode(null);
     
-    // Refresh user progress from Firebase
-    const user = auth.currentUser;
-    if (user) {
+    // Refresh user progress via API
+    if (currentUser) {
       try {
-        const userRef = doc(firestore, 'users', user.uid);
-        const userDoc = await getDoc(userRef);
-        
-        if (userDoc.exists()) {
-          const userData = userDoc.data();
-          console.log('🔄 Refreshed user data:', {
-            unlockedLevels: userData.soloUnlockedLevels,
-            completedLevels: userData.soloCompletedLevels
-          });
-          
-          // Fix unlocked levels based on completed levels
+        const res = await fetch(`${API_BASE_URL}/api/profile/${currentUser.uid}`);
+        if (res.ok) {
+          const userData = await res.json();
           const completedLevels = userData.soloCompletedLevels || [];
           const fixedUnlockedLevels = fixUnlockedLevels(userData.soloUnlockedLevels, completedLevels);
-          
-          console.log('🔄 Final unlocked levels after refresh:', fixedUnlockedLevels);
-          
           setUserProgress({
             unlockedLevels: fixedUnlockedLevels,
-            completedLevels: userData.soloCompletedLevels || [],
+            completedLevels,
             totalChallenges: userData.soloTotalChallenges || 0,
             winRate: userData.soloWinRate || 0
           });
@@ -418,7 +384,7 @@ export default function ChallengePage() {
         console.error('❌ Error refreshing user progress:', error);
       }
     }
-  }, [fixUnlockedLevels]);
+  }, [currentUser, fixUnlockedLevels]);
 
   // Memoized challenge modes
   const memoizedModes = useMemo(() => CHALLENGE_MODES, []);

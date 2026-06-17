@@ -1,17 +1,16 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { auth } from "../../firebase/firebase";
-import { onAuthStateChanged, signOut } from "firebase/auth";
 import { Link, useNavigate } from "react-router-dom";
 import { FaTrophy, FaStar, FaMedal, FaGamepad, FaChartLine, FaFire } from "react-icons/fa";
-import { firestore } from "../../firebase/firebase";
-import { collection, query, where, getDocs, orderBy, addDoc, serverTimestamp } from "firebase/firestore";
+import { useAuth } from "../../contexts/AuthContext";
 import GameHeader from "../../components/common/GameHeader";
 import { useAchievement } from "../../contexts/AchievementContext";
 import { calculateAllTitles } from "../../utils/achievementSystem";
 
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || '';
+
 export default function GameProfilePage() {
   const navigate = useNavigate();
-  const [user, setUser] = useState(null);
+  const { currentUser: user, logout } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
   const [playerStats, setPlayerStats] = useState({
     totalGames: 0,
@@ -47,41 +46,27 @@ export default function GameProfilePage() {
 
   const loadUserData = useCallback(async (userId) => {
     try {
-      // Get all game history
-      const gamesQuery = query(
-        collection(firestore, 'gameHistory'),
-        where('userId', '==', userId),
-        orderBy('createdAt', 'desc')
-      );
-      
-      let gamesSnapshot;
-      try {
-        gamesSnapshot = await getDocs(gamesQuery);
-      } catch (queryError) {
-        console.warn('⚠️ Game profile query failed, trying fallback:', queryError.message);
-        
-        // Fallback without orderBy to avoid index issues
-        const fallbackQuery = query(
-          collection(firestore, 'gameHistory'),
-          where('userId', '==', userId)
-        );
-        
-        gamesSnapshot = await getDocs(fallbackQuery);
-      }
-      
-      const games = [];
-      gamesSnapshot.forEach(doc => {
-        games.push({ id: doc.id, ...doc.data() });
-      });
-      
-      // Sort by date if using fallback query
-      if (games.length > 0 && !games[0].createdAt) {
-        games.sort((a, b) => {
-          const dateA = a.timestamp?.toDate() || a.createdAt?.toDate() || new Date(0);
-          const dateB = b.timestamp?.toDate() || b.createdAt?.toDate() || new Date(0);
-          return dateB - dateA;
-        });
-      }
+      // Get game history via API
+      const res = await fetch(`${API_BASE_URL}/api/game-history/${userId}?limit=100`);
+      const { games: rawGames = [] } = res.ok ? await res.json() : {};
+
+      const games = rawGames.map(g => ({
+        id: g.id,
+        userId: g.user_id,
+        gameType: g.game_type,
+        result: g.result,
+        profit: g.profit,
+        profitPercentage: g.profit_percentage,
+        finalBalance: g.final_balance,
+        difficulty: g.difficulty,
+        market: g.market,
+        symbol: g.symbol,
+        duration: g.duration,
+        totalTrades: g.total_trades,
+        gameMode: g.game_mode,
+        createdAt: g.created_at,
+        ...g.data
+      }));
         
       // Separate Solo and Multiplayer game data to calculate difficulty stats
       const soloGames = games.filter(game => game.gameMode !== 'multiplayer');
@@ -158,15 +143,14 @@ export default function GameProfilePage() {
   }, [calculateTitles]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      if (currentUser) {
-        setUser(currentUser);
-        await loadUserData(currentUser.uid);
+    const init = async () => {
+      if (user) {
+        await loadUserData(user.uid);
       }
       setIsLoading(false);
-    });
-    return () => unsubscribe();
-  }, [loadUserData]);
+    };
+    init();
+  }, [user, loadUserData]);
 
   const calculateRank = (winRate, totalProfit, difficultyStats) => {
     // คำนวณ weighted score จากระดับความยากที่เล่น
@@ -215,7 +199,7 @@ export default function GameProfilePage() {
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      await logout();
       navigate("/");
     } catch (error) {
       console.error("Error signing out:", error);
@@ -408,33 +392,3 @@ export default function GameProfilePage() {
   );
 }
 
-// Export ฟังก์ชันสำหรับบันทึกคะแนน Quiz เพื่อใช้ในหน้าอื่น
-export const saveQuizScoreToFirebase = async (quizData) => {
-  try {
-    const user = auth.currentUser;
-    if (!user) {
-      console.warn('No user logged in');
-      return;
-    }
-
-    const quizScore = {
-      userId: user.uid,
-      userEmail: user.email,
-      quizType: quizData.type || 'general',
-      score: quizData.score || 0,
-      totalQuestions: quizData.totalQuestions || 0,
-      correctAnswers: quizData.correctAnswers || 0,
-      timeSpent: quizData.timeSpent || 0,
-      difficulty: quizData.difficulty || 'medium',
-      createdAt: serverTimestamp(),
-      timestamp: new Date()
-    };
-
-    const docRef = await addDoc(collection(firestore, 'quizScores'), quizScore);
-    console.log('Quiz score saved with ID:', docRef.id);
-    return docRef.id;
-  } catch (error) {
-    console.error('Error saving quiz score:', error);
-    throw error;
-  }
-};

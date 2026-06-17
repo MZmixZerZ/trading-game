@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { auth } from '../../firebase/firebase';
-import { onAuthStateChanged } from 'firebase/auth';
+import { useAuth } from '../../contexts/AuthContext';
 import { useMultiplayer } from '../../contexts/MultiplayerContext';
 import multiplayerService from '../../services/multiplayerService';
 import ErrorBoundary from '../../components/common/ErrorBoundary';
@@ -172,6 +171,8 @@ function MultiplayerChallengeCore() {
   const [showResultsModal, setShowResultsModal] = useState(false);
   const [gameHasEnded, setGameHasEnded] = useState(false);
   const [finalGameResults, setFinalGameResults] = useState(null);
+  const [isChartPausedByPlayer, setIsChartPausedByPlayer] = useState(false);
+  const [chartPauseOverride, setChartPauseOverride] = useState(null);
   
   // อัปเดต timeLeft เมื่อได้ room settings ใหม่
   useEffect(() => {
@@ -179,7 +180,15 @@ function MultiplayerChallengeCore() {
       setTimeLeft(currentRoom.settings.timeLimit * 60);
     }
   }, [currentRoom?.settings?.timeLimit, gameHasEnded]);
-  
+
+  // Auto-reset chartPauseOverride after forcing resume so chart goes back to self-managed mode
+  useEffect(() => {
+    if (chartPauseOverride === false) {
+      const t = setTimeout(() => setChartPauseOverride(null), 150);
+      return () => clearTimeout(t);
+    }
+  }, [chartPauseOverride]);
+
   const [balance, setBalance] = useState(1000000);
   const [position, setPosition] = useState(0);
   const [totalShares, setTotalShares] = useState(0);
@@ -238,34 +247,46 @@ function MultiplayerChallengeCore() {
     allChartDataRef.current = allChartData;
   }, [allChartData]);
 
+  const { currentUser } = useAuth();
+
   // Auth effect
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (!user) {
-        navigate('/');
-      }
-    });
-    return unsubscribe;
-  }, [navigate]);
+    if (!currentUser) navigate('/');
+  }, [currentUser, navigate]);
 
   // Join room and subscribe to room updates
   useEffect(() => {
-    if (roomCode && auth.currentUser) {
-      multiplayerService.joinRoom(roomCode, auth.currentUser.uid, auth.currentUser.displayName || 'Player')
+    if (roomCode && currentUser) {
+      multiplayerService.joinRoom(roomCode, currentUser.uid, currentUser.displayName || 'Player')
         .catch(error => {
           console.error('❌ Error joining room:', error);
-          // Don't block the game if join room fails
         });
-      
+
       const unsubscribeRoom = subscribeToRoom(roomCode);
       const unsubscribePlayers = subscribeToPlayers(roomCode);
-      
+
       return () => {
         unsubscribeRoom();
         unsubscribePlayers();
       };
     }
-  }, [roomCode, subscribeToRoom, subscribeToPlayers]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomCode, currentUser]);
+
+  // Sync balance/position from server after each confirmed trade
+  useEffect(() => {
+    if (!multiplayerService.socket || !currentUser) return;
+    const handleTradeExecuted = (data) => {
+      if (data.playerId !== currentUser.uid) return;
+      console.log('✅ trade-executed sync:', data.newBalance, 'shares:', data.newPosition);
+      setBalance(data.newBalance);
+      if (typeof data.newPosition === 'number') setPosition(data.newPosition);
+      if (typeof data.avgPrice === 'number' && data.newPosition > 0) setAverageCost(data.avgPrice);
+      if (data.newPosition === 0) { setAverageCost(0); setUnrealizedPnL(0); setTotalShares(0); }
+    };
+    multiplayerService.socket.on('trade-executed', handleTradeExecuted);
+    return () => { multiplayerService.socket?.off('trade-executed', handleTradeExecuted); };
+  }, [currentUser]);
 
   // ตรวจสอบสถานะห้องและเริ่มเกม - เหลือเฉพาะ playing และ finished
   useEffect(() => {
@@ -446,14 +467,16 @@ function MultiplayerChallengeCore() {
         timestamp: Date.now(),
         balance: newBalance,
         position: position + qty,
-        playerId: auth.currentUser?.uid
+        playerId: currentUser?.uid
       };
 
       try {
         await multiplayerService.submitTrade(roomCode, tradeData);
-        
-        // ลบการอัปเดต Firebase ออกจากที่นี่ ให้ RoomLeaderboard จัดการ
         console.log('✅ Buy trade submitted successfully');
+        if (isChartPausedByPlayer) {
+          setChartPauseOverride(false);
+          setIsChartPausedByPlayer(false);
+        }
       } catch (error) {
         console.error('❌ Error submitting buy trade:', error);
       }
@@ -504,30 +527,32 @@ function MultiplayerChallengeCore() {
         timestamp: Date.now(),
         balance: newBalance,
         position: newPosition,
-        playerId: auth.currentUser?.uid
+        playerId: currentUser?.uid
       };
 
       try {
         await multiplayerService.submitTrade(roomCode, tradeData);
-        
-        // ลบการอัปเดต Firebase ออกจากที่นี่ ให้ RoomLeaderboard จัดการ
         console.log('✅ Sell trade submitted successfully');
+        if (isChartPausedByPlayer) {
+          setChartPauseOverride(false);
+          setIsChartPausedByPlayer(false);
+        }
       } catch (error) {
         console.error('❌ Error submitting sell trade:', error);
       }
     }
-  }, [balance, position, totalShares, averageCost, currentPrice, syncedSymbol, syncedMarket, roomCode]);
+  }, [currentUser, balance, position, totalShares, averageCost, currentPrice, syncedSymbol, syncedMarket, roomCode, isChartPausedByPlayer]);
 
   // Handle leaving the room
   const handleLeaveRoom = useCallback(async () => {
     try {
-      await multiplayerService.leaveRoom(roomCode, auth.currentUser?.uid);
+      await multiplayerService.leaveRoom(roomCode, currentUser?.uid);
       navigate('/multiplayer');
     } catch (error) {
       console.error('Error leaving room:', error);
       navigate('/multiplayer');
     }
-  }, [roomCode, navigate]);
+  }, [roomCode, navigate, currentUser]);
 
   // Handle game end notification close -> show results
   const handleGameEndNotificationClose = useCallback(() => {
@@ -627,14 +652,14 @@ function MultiplayerChallengeCore() {
 
   // Memoized current user data for Firebase sync
   const currentUserData = useMemo(() => ({
-    id: auth.currentUser?.uid,
-    name: auth.currentUser?.displayName || 'คุณ',
+    id: currentUser?.uid,
+    name: currentUser?.displayName || 'คุณ',
     balance: balance,
     position: position,
     totalValue: gameStats.totalValue, // ใช้ค่าจาก gameStats ที่คำนวณด้วย averageCost
     profit: gameStats.totalReturn,
     profitPercentage: gameStats.returnPercentage
-  }), [balance, position, gameStats.totalValue, gameStats.totalReturn, gameStats.returnPercentage]);
+  }), [currentUser, balance, position, gameStats.totalValue, gameStats.totalReturn, gameStats.returnPercentage]);
 
   // ใช้ข้อมูลจาก server โดยตรง ไม่แทรกแซงข้อมูลของผู้เล่นปัจจุบัน
   const updatedPlayers = useMemo(() => {
@@ -713,8 +738,9 @@ function MultiplayerChallengeCore() {
             onDataLoaded={handleChartDataUpdate}
             onCurrentPriceChange={handlePriceUpdate}
             playbackIndex={playbackIndex}
-            isChartPaused={gameHasEnded ? true : null} // Only force pause when game ends, otherwise allow player control
-            playerId={auth.currentUser?.uid || 'player1'}
+            isChartPaused={gameHasEnded ? true : chartPauseOverride}
+            onChartPauseChange={setIsChartPausedByPlayer}
+            playerId={currentUser?.uid || 'player1'}
             seed={roomCode ? stringToHash(roomCode) : Math.floor(Math.random() * 10000)}
             gameDurationSeconds={currentRoom?.settings?.timeLimit ? currentRoom.settings.timeLimit * 60 : timeLeft}
             onGameTimeUpdate={(duration) => setActualGameDuration(duration)}
@@ -765,7 +791,7 @@ function MultiplayerChallengeCore() {
                 <div className="max-h-40 overflow-y-auto">
                   <RoomLeaderboard
                     roomCode={roomCode}
-                    currentUserId={auth.currentUser?.uid}
+                    currentUserId={currentUser?.uid}
                     players={updatedPlayers}
                     currentPrice={currentPrice}
                     currentUserData={currentUserData}
@@ -788,7 +814,7 @@ function MultiplayerChallengeCore() {
         isOpen={showResultsModal}
         onClose={handleResultsModalClose}
         players={finalGameResults || updatedPlayers || []}
-        currentUser={auth.currentUser}
+        currentUser={currentUser}
         roomCode={roomCode}
         onBackToHome={() => navigate('/')}
         actualGameDuration={actualGameDuration}
