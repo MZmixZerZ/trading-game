@@ -18,9 +18,9 @@ const getAllowedOrigins = () => {
     process.env.CLIENT_URL,
     process.env.FRONTEND_URL,
     process.env.PROXY_SERVER_URL, // เพิ่ม proxy server URL
+    'https://trading-game-client-mauve.vercel.app',
     'https://streaming-ideatrade.vercel.app',
     'https://trading-game.vercel.app',
-    'https://trading-game-mzmixzerz.vercel.app',
     'https://streaming-ideatrade.netlify.app',
     'https://streaming-ideatrade.onrender.com'
   ].filter(Boolean); // Remove undefined values
