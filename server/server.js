@@ -881,12 +881,15 @@ io.on('connection', (socket) => {
         portfolio: Object.fromEntries(player.portfolio)
       });
 
+      // Track real market price so portfolio valuation stays consistent with Yahoo Finance data
+      room.currentPrice = price;
+
       // Notify other players of leaderboard update
       const leaderboard = Array.from(room.players.values()).map(p => ({
         id: p.id,
         name: p.name,
         balance: p.balance,
-        portfolioValue: calculatePortfolioValue(p.portfolio, room.chart.data[room.chart.currentIndex]?.close || price)
+        portfolioValue: calculatePortfolioValue(p.portfolio, price)
       })).sort((a, b) => (b.balance + b.portfolioValue) - (a.balance + a.portfolioValue));
 
       io.to(roomId).emit('leaderboard-update', { leaderboard });
@@ -975,7 +978,7 @@ io.on('connection', (socket) => {
 
       // คำนวณผลลัพธ์สุดท้าย
       const finalResults = Array.from(room.players.values()).map(player => {
-        const currentPrice = room.chart.data[room.chart.currentIndex]?.close || 0;
+        const currentPrice = room.currentPrice || room.chart.data[room.chart.currentIndex]?.close || 0;
         const portfolioValue = calculatePortfolioValue(player.portfolio, currentPrice);
         const totalValue = player.balance + portfolioValue;
         const totalReturn = totalValue - 1000000; // เงินเริ่มต้น
@@ -1161,7 +1164,7 @@ function startRoomChartProgression(roomId) {
       
       // Calculate final results
       const finalResults = Array.from(room.players.values()).map(p => {
-        const currentPrice = room.chart.data[room.chart.currentIndex]?.close || 100;
+        const currentPrice = room.currentPrice || room.chart.data[room.chart.currentIndex]?.close || 100;
         const portfolioValue = calculatePortfolioValue(p.portfolio, currentPrice);
         return {
           id: p.id,
