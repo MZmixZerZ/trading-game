@@ -307,36 +307,31 @@ const LevelAssessmentPage = () => {
 
   if (currentStep === 'completed') {
     const levelInfo = getLevelInfo(userLevel);
-    
+
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-purple-900">
         <GameHeader showBackButton={true} backPath="/challenge" />
-        
+
         <div className="container mx-auto px-4 py-8">
           <div className="max-w-2xl mx-auto text-center">
             <FaCheckCircle className="text-6xl text-green-400 mx-auto mb-6" />
             <h1 className="text-4xl font-bold text-white mb-2">
-              You have evaluated.
+              You have already completed the assessment.
             </h1>
-            <p className="text-gray-300 mb-8">
+            <p className="text-gray-300 mb-4">
               Your current level: <span className={`font-bold ${levelInfo.color}`}>{levelInfo.name}</span>
+            </p>
+            <p className="text-gray-400 text-sm mb-8">
+              The Knowledge Assessment can only be taken once per account.
             </p>
 
             <div className="space-y-4">
               <button
-                onClick={() => setCurrentStep('quiz')}
+                onClick={() => window.location.href = '/challenge'}
                 className="px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition-colors"
               >
-                Re-evaluate
+                Start Playing
               </button>
-              <div>
-                <button
-                  onClick={() => window.location.href = '/challenge'}
-                  className="px-6 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg transition-colors"
-                >
-                  Back to Home
-                </button>
-              </div>
             </div>
           </div>
         </div>
