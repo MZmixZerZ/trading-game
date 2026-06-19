@@ -3,7 +3,7 @@ import { FaCheckCircle, FaExclamationTriangle, FaWifi, FaUser, FaDatabase } from
 import { useAuth } from '../../contexts/AuthContext';
 import { useConnectionStatus } from '../../hooks/useConnectionStatus';
 
-const FirebaseStatusPanelNew = () => {
+const ConnectionStatusPanel = () => {
   const { currentUser } = useAuth();
   const { isOnline, isConnected } = useConnectionStatus();
   const [showDetails, setShowDetails] = useState(false);
@@ -90,4 +90,4 @@ const FirebaseStatusPanelNew = () => {
   );
 };
 
-export default FirebaseStatusPanelNew;
+export default ConnectionStatusPanel;

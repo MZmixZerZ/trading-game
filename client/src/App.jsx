@@ -1,10 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import {
   BrowserRouter as Router,
   Routes,
   Route,
   Navigate,
-  useLocation,
 } from "react-router-dom";
 import WelcomePage from "./pages/common/WelcomePage";
 import GameLoginPage from "./pages/common/GameLoginPage";
@@ -28,8 +27,6 @@ import { UserProfileProvider } from "./contexts/UserProfileContext";
 import { MultiplayerProvider } from "./contexts/MultiplayerContext";
 import { AchievementProvider, useAchievement } from "./contexts/AchievementContext";
 import ScrollManager from "./components/common/ScrollManager";
-import RouteTransition from "./components/common/RouteTransition";
-import UltimateLoadingScreen from "./components/common/UltimateLoadingScreen";
 import AchievementNotification from "./components/common/AchievementNotification";
 import AppLayout from "./components/common/AppLayout";
 import ErrorBoundary from "./components/common/ErrorBoundary";
@@ -53,13 +50,9 @@ function GlobalAchievementNotifications() {
   );
 }
 
-// Wrapper component เพื่อใช้ useLocation
 function AppRoutes() {
-  const location = useLocation();
-
   return (
-    <RouteTransition pathname={location.pathname}>
-      <Routes>
+    <Routes>
         {/* Public pages that should NOT show the sidebar */}
         <Route path="/" element={<WelcomePage />} />
         <Route path="/login" element={<GameLoginPage />} />
@@ -105,26 +98,10 @@ function AppRoutes() {
 
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
-    </RouteTransition>
   );
 }
 
 export default function App() {
-  const [isInitialLoading, setIsInitialLoading] = useState(true);
-
-  useEffect(() => {
-    // จำลองการโหลดแอปเริ่มต้น
-    const timer = setTimeout(() => {
-      setIsInitialLoading(false);
-    }, 2500); // ลดเวลาโหลดลง
-
-    return () => clearTimeout(timer);
-  }, []);
-
-  if (isInitialLoading) {
-    return <UltimateLoadingScreen />;
-  }
-
   return (
     <ErrorBoundary>
       <AuthProvider>

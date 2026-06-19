@@ -2,7 +2,7 @@ import React from 'react';
 import { Outlet } from 'react-router-dom';
 import GameNavigation from './GameNavigation';
 import ConnectionStatusIndicator from './ConnectionStatusIndicator';
-import FirebaseStatusPanelNew from './FirebaseStatusPanelNew';
+import ConnectionStatusPanel from './ConnectionStatusPanel';
 
 // Shared app shell: fixed sidebar + padded content so pages don't overlap
 export default function AppLayout() {
@@ -14,8 +14,7 @@ export default function AppLayout() {
       {/* Connection Status Indicator */}
       <ConnectionStatusIndicator />
 
-      {/* Firebase Status Panel */}
-      <FirebaseStatusPanelNew />
+      <ConnectionStatusPanel />
 
       {/* Main content area offset to the right of the sidebar (w-20) */}
       <div className="pl-20">
