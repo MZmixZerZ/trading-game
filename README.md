@@ -119,7 +119,7 @@ Open [http://localhost:3412](http://localhost:3412) in your browser.
 
 ---
 
-**Developer:** IdeaTrade Team 
-Mr.Apirom Phumphung
-This project develop in CS4916 Cooperative education
+**Developer:** IdeaTrade Team\n
+Mr.Apirom Phumphung\n
+This project develop in CS4916 Cooperative education\n
 **Updated:** October 2025
