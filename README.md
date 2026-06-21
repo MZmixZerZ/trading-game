@@ -5,7 +5,7 @@ A full-stack real-time stock trading simulation platform with multiplayer suppor
 ## Live Demo
 
 - **Frontend:** https://trading-game-client-mauve.vercel.app
-- **Backend API:** https://streaming-ideatrade-server-production.up.railway.app/api/status
+- **Backend API:** streaming-ideatrade-server-production.up.railway.app
 
 ## Screenshots
 
