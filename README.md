@@ -4,8 +4,8 @@ A full-stack real-time stock trading simulation platform with multiplayer suppor
 
 ## Live Demo
 
-- **Frontend:** https://streaming-ideatrade.vercel.app
-- **Backend API:** https://streaming-ideatrade-production.up.railway.app
+- **Frontend:** https://https://trading-game-client-mauve.vercel.app
+- **Backend API:** https://streaming-ideatrade-server-production.up.railway.app/api/status
 
 ## Screenshots
 
@@ -119,4 +119,7 @@ Open [http://localhost:3412](http://localhost:3412) in your browser.
 
 ---
 
-**Developer:** IdeaTrade Team &nbsp;|&nbsp; **Version:** 1.0.0 &nbsp;|&nbsp; **Updated:** October 2025
+**Developer:** IdeaTrade Team 
+Mr.Apirom Phumphung
+This project develop in CS4916 Cooperative education
+**Updated:** October 2025
